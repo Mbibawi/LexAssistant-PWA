@@ -1,3 +1,27 @@
+/**
+ * Lightweight DOM helpers — no framework.
+ * Convention: functions named el() create elements, show()/hide() toggle visibility.
+ */
+export function el(tag, attrs = {}, ...children) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className')
+            e.className = v;
+        else if (k === 'innerHTML')
+            e.innerHTML = v;
+        else if (k === 'textContent')
+            e.textContent = v;
+        else
+            e[k] = v;
+    }
+    for (const c of children) {
+        if (typeof c === 'string')
+            e.appendChild(document.createTextNode(c));
+        else
+            e.appendChild(c);
+    }
+    return e;
+}
 export function qs(selector, root = document) {
     const found = root.querySelector(selector);
     if (!found)
@@ -55,29 +79,5 @@ export function formatDate(ts) {
 }
 export function formatDateTime(ts) {
     return new Date(ts).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-/**
-* Lightweight DOM helpers — no framework.
-* Convention: functions named el() create elements, show()/hide() toggle visibility.
-*/
-export function el(tag, attrs = {}, ...children) {
-    const e = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-        if (k === 'className')
-            e.className = v;
-        else if (k === 'innerHTML')
-            e.innerHTML = v;
-        else if (k === 'textContent')
-            e.textContent = v;
-        else
-            e[k] = v;
-    }
-    for (const c of children) {
-        if (typeof c === 'string')
-            e.appendChild(document.createTextNode(c));
-        else
-            e.appendChild(c);
-    }
-    return e;
 }
 //# sourceMappingURL=ui.js.map

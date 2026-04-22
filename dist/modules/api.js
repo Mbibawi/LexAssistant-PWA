@@ -1,12 +1,11 @@
 import { toBase64 } from './ingest.js';
-import { Cases, Library } from './onedrive.js';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-20250514';
 const LS_KEY = 'lex_api_key';
 export function getStoredKey() { return localStorage.getItem(LS_KEY) ?? ''; }
 export function setStoredKey(k) { localStorage.setItem(LS_KEY, k.trim()); }
 export function clearStoredKey() { localStorage.removeItem(LS_KEY); }
-// ─── MIME types Claude accepts as native 'document' blocks ───────────────────
+// ─── MIME types Claude accepts natively ──────────────────────────────────────
 const NATIVE_MIMES = new Set([
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -18,20 +17,19 @@ function docPart(name, mime, base64) {
     if (NATIVE_MIMES.has(mime)) {
         return { type: 'document', source: { type: 'base64', media_type: mime, data: base64 }, title: name };
     }
-    // Fallback: announce file as text note
     return { type: 'text', text: `[Fichier joint : ${name} — format non lu nativement]` };
 }
 // ─── System prompts ───────────────────────────────────────────────────────────
 function modeInstruction(mode) {
     switch (mode) {
         case 'analyse':
-            return 'MODE ANALYSE. Expert juriste français. Cite systématiquement les textes (CGI, C.civ., C.com., CPC…) et la jurisprudence (références exactes). Signale les risques non demandés. Ne sur-simplifie pas.';
+            return 'MODE ANALYSE. Expert juriste français. Cite systématiquement les textes et jurisprudence (références exactes). Signale les risques non demandés. Ne sur-simplifie pas.';
         case 'redaction':
-            return 'MODE RÉDACTION. Rédige un document juridique complet, sans préambule. Toutes les mentions légales requises. Éléments de fait intégrés depuis les pièces. Termine par les signatures.';
+            return "MODE RÉDACTION. Rédige un document juridique complet, sans préambule. Toutes les mentions légales. Éléments de fait intégrés depuis les pièces. Termine par les signatures.";
         case 'modification':
-            return 'MODE MODIFICATION. Identifie précisément les passages à modifier, justifie par le droit applicable, produis la version modifiée intégrale. Marque les changements avec [MODIFIÉ : …].';
+            return "MODE MODIFICATION. Identifie les passages à modifier, justifie par le droit applicable, produis la version modifiée intégrale. Marque les changements avec [MODIFIÉ : …].";
         case 'note':
-            return 'MODE NOTE PERMANENTE. Confirme la prise en compte, résume en une phrase ce qui est retenu, explique l\'impact sur les prochaines analyses. Priorité absolue sur toutes les inférences futures.';
+            return "MODE NOTE PERMANENTE. Confirme la prise en compte, résume ce qui est retenu, explique l'impact sur les prochaines analyses. Priorité absolue sur toutes tes inférences futures.";
     }
 }
 export function buildCaseSystem(caseName, caseDomain, notes, skills, mode) {
@@ -76,33 +74,18 @@ Tu as accès à une bibliothèque juridique thématique fournie avec chaque ques
 - Si la question dépasse les documents, le signaler explicitement.
 - Propose des analyses comparatives et chronologies jurisprudentielles.`;
 }
-// ─── Document fetching & content building ────────────────────────────────────
-export async function fetchAndBuildDocParts(folderName, docs) {
+// ─── File fetching — injected by the caller ───────────────────────────────────
+// api.ts no longer imports from onedrive.ts directly; instead the caller
+// provides a readFile function appropriate to the scenario.
+async function buildDocParts(docs, readFile) {
     const parts = [];
-    const cases = new Cases();
     for (const doc of docs) {
         try {
-            const buf = await cases.readCaseFile(folderName, doc.name);
-            const b64 = toBase64(buf);
-            parts.push(docPart(doc.name, doc.mimeType, b64));
+            const buf = await readFile(doc.name);
+            parts.push(docPart(doc.name, doc.mimeType, toBase64(buf)));
         }
         catch {
             parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible sur OneDrive]` });
-        }
-    }
-    return parts;
-}
-export async function fetchAndBuildLibParts(domain, docs) {
-    const parts = [];
-    const lib = new Library();
-    for (const doc of docs) {
-        try {
-            const buf = await lib.readLibFile(domain, doc.name);
-            const b64 = toBase64(buf);
-            parts.push(docPart(doc.name, doc.mimeType, b64));
-        }
-        catch {
-            parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible]` });
         }
     }
     return parts;
@@ -112,7 +95,7 @@ export async function callClaudeCase(opts) {
     if (!key)
         throw new Error('Clé API manquante. Configurez-la dans les paramètres.');
     const system = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
-    const docParts = await fetchAndBuildDocParts(opts.folderName, opts.docs);
+    const docParts = await buildDocParts(opts.docs, opts.readFile);
     const content = [...docParts, { type: 'text', text: opts.userMessage }];
     return fetchClaude(key, { model: MODEL, max_tokens: 4096, system,
         messages: [{ role: 'user', content: content }] });
@@ -122,8 +105,7 @@ export async function callClaudeLib(opts) {
     if (!key)
         throw new Error('Clé API manquante. Configurez-la dans les paramètres.');
     const system = buildLibSystem(opts.domain, opts.skills);
-    const domainStr = opts.domain === 'all' ? 'all' : opts.domain;
-    const docParts = await fetchAndBuildLibParts(domainStr, opts.docs);
+    const docParts = await buildDocParts(opts.docs, opts.readFile);
     const messages = [
         ...opts.history.map(h => ({ role: h.role, content: h.content })),
         { role: 'user', content: [...docParts, { type: 'text', text: opts.userMessage }] }
