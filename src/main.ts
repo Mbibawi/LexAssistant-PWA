@@ -13,7 +13,6 @@ import { Library } from './modules/onedrive.js';
 import { el, toggle } from './modules/ui.js';
 
 // ─── Single shared instance ───────────────────────────────────────────────────
-
 const app = new Library();
 
 // ─── Active scenario ──────────────────────────────────────────────────────────
@@ -159,17 +158,15 @@ function buildSettingsShortcut(): HTMLElement {
 // ─── Mount Dossiers ───────────────────────────────────────────────────────────
 
 async function mountDossiers(): Promise<void> {
-  activeScenario = 'dossiers';
-  updateTopbarForDossiers();
-
-  const content = document.getElementById('app-content')!;
-  content.innerHTML = '';
-  content.className = 'dossiers-view';
+  activeScenario = "dossiers";
+  updateTopBar("Dossiers", "📚 Bibliothèque", () => mountBibliotheque());
+  const content = document.getElementById("app-content")!;
+  content.innerHTML = "";
+  content.className = "dossiers-view";
   content.innerHTML = buildDossiersHTML();
 
   // Wire all scenario-specific UI
   app.setupBarsBtns();
-  //app.setupModeBar();
   app.setupInputArea();
 
   app.updateODStatus();
@@ -196,7 +193,7 @@ async function mountDossiers(): Promise<void> {
 
 async function mountBibliotheque(): Promise<void> {
   activeScenario = 'bibliotheque';
-  updateTopbarForLibrary();
+  updateTopBar("Bibliothèque", "📁 Dossiers", () => mountDossiers());
 
   const content = document.getElementById('app-content')!;
   content.innerHTML = '';
@@ -226,27 +223,39 @@ function updateTopbarForSelector(): void {
   if (odBtn) odBtn.textContent = app.oneDriveUser ? '☁ ' + app.oneDriveUser : '☁ Connexion';
 }
 
-function updateTopbarForDossiers(): void {
-  const homeBtn   = document.getElementById('btn-home')     as HTMLButtonElement;
-  const switchBtn = document.getElementById('btn-switch')   as HTMLButtonElement;
-  const newBtn    = document.getElementById('btn-new-case-top') as HTMLButtonElement | null;
-  const breadcrumb= document.getElementById('topbar-breadcrumb') as HTMLElement;
+function _accountupdateTopbarForDossiers(): void {
+  const homeBtn = document.getElementById("btn-home") as HTMLButtonElement;
+  const switchBtn = document.getElementById("btn-switch") as HTMLButtonElement;
+  const newBtn = document.getElementById(
+    "btn-new-case-top",
+  ) as HTMLButtonElement | null;
+  const breadcrumb = document.getElementById(
+    "topbar-breadcrumb",
+  ) as HTMLElement;
 
-  toggle(homeBtn,   true);
+  toggle(homeBtn, true);
   toggle(switchBtn, true);
-  if (switchBtn) { switchBtn.textContent = '📚 Bibliothèque'; switchBtn.onclick = () => mountBibliotheque(); }
-  if (breadcrumb) breadcrumb.textContent = 'Dossiers';
+  if (switchBtn) {
+    switchBtn.textContent = "📚 Bibliothèque";
+    switchBtn.onclick = () => mountBibliotheque();
+  }
+  if (breadcrumb) breadcrumb.textContent = "Dossiers";
 }
 
-function updateTopbarForLibrary(): void {
-  const homeBtn   = document.getElementById('btn-home')   as HTMLButtonElement;
-  const switchBtn = document.getElementById('btn-switch') as HTMLButtonElement;
-  const breadcrumb= document.getElementById('topbar-breadcrumb') as HTMLElement;
+function updateTopBar(label: string, switchTo: string, action: Function): void {
+  const homeBtn = document.getElementById("btn-home") as HTMLButtonElement;
+  const switchBtn = document.getElementById("btn-switch") as HTMLButtonElement;
+  const breadcrumb = document.getElementById(
+    "topbar-breadcrumb",
+  ) as HTMLElement;
 
-  toggle(homeBtn,   true);
+  toggle(homeBtn, true);
   toggle(switchBtn, true);
-  if (switchBtn) { switchBtn.textContent = '📁 Dossiers'; switchBtn.onclick = () => mountDossiers(); }
-  if (breadcrumb) breadcrumb.textContent = 'Bibliothèque';
+  if (switchBtn) {
+    switchBtn.textContent = switchTo;
+    switchBtn.onclick = () => action();
+  }
+  if (breadcrumb) breadcrumb.textContent = label;
 }
 
 // ─── OneDrive button handler ──────────────────────────────────────────────────

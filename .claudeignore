@@ -1,0 +1,81 @@
+# --- Claude Code Ignore Template ---
+
+# 1. Version Control & Environments
+.git/
+.svn/
+.hg/
+.env
+.env.*
+!.env.example
+
+# 2. Dependencies (The biggest money savers)
+node_modules/
+bower_components/
+vendor/
+packages/*/node_modules/
+.pnp/
+.pnp.js
+
+# 3. Build Outputs & Bundles
+dist/
+build/
+out/
+scripts/
+.next/
+.nuxt/
+.svelte-kit/
+.cache/
+target/
+bin/
+obj/
+*.min.js
+*.min.css
+*.map
+*.tar.gz
+*.tar
+*.zip
+
+# 4. Large Media & Assets
+assets/fonts/
+assets/images/
+public/videos/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.mp4
+*.mp3
+
+# 5. Logs, Temps, & Coverage
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+.vercel/
+.turbo/
+coverage/
+.nyc_output/
+
+# 6. Database & Large Data Files
+*.sql
+*.sqlite
+*.db
+*.csv
+*.jsonl
+*.xml
+# Optional: Ignore package-lock.json if your project is huge
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# 7. IDE & System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

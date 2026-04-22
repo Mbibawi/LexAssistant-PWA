@@ -1,10 +1,10 @@
 import { toBase64 } from './ingest.js';
 const API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-20250514';
-const LS_KEY = 'lex_api_key';
-export function getStoredKey() { return localStorage.getItem(LS_KEY) ?? ''; }
-export function setStoredKey(k) { localStorage.setItem(LS_KEY, k.trim()); }
-export function clearStoredKey() { localStorage.removeItem(LS_KEY); }
+const MODEL = "claude-sonnet-4-6";
+let _apiKey = '';
+export function getStoredKey() { return _apiKey; }
+export function setStoredKey(k) { _apiKey = k.trim(); }
+export function clearStoredKey() { _apiKey = ''; }
 // ─── MIME types Claude accepts natively ──────────────────────────────────────
 const NATIVE_MIMES = new Set([
     'application/pdf',

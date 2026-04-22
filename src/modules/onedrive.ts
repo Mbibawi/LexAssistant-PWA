@@ -32,7 +32,14 @@ import { downloadBlob, generateDocx } from './docxgen.js';
 
 const LS_CONFIG = 'lex_onedrive_config';
 const MSAL_CDN  = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/dist/index.iife.min.js';
-const GRAPH     = 'https://graph.microsoft.com/v1.0';
+const GRAPH = "https://graph.microsoft.com/v1.0/me/drive/root:/";
+const APP_ROOT = "Legal/Mon Cabinet d'Avocat/_LexAssistant";
+
+const FOLDER_LIBRARY = "Bibliotheque";
+const FOLDER_CASES = "Affaires";
+const FOLDER_SKILLS = "_Skills";
+const APP_CONFIG_FILE = "_config.json";
+
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -51,7 +58,7 @@ class Configuration {
     return Boolean(c?.clientId && c?.rootFolder);
   }
   root(): string {
-    return this.getConfig()?.rootFolder ?? 'LexAssistant';
+    return this.getConfig()?.rootFolder ?? APP_ROOT;
   }
 }
 
@@ -157,7 +164,9 @@ class OneDriveAuth {
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
 
 class Folders extends OneDriveAuth {
-  protected get rootFolder(): string { return this.config.root(); }
+  protected get rootFolder(): string {
+    return this.config.root();
+  }
   private token: string | null = null;
 
   async setToken(): Promise<string> {
@@ -165,117 +174,195 @@ class Folders extends OneDriveAuth {
     return this.token;
   }
   // Encode a path for Graph: "a/b/c" → "/me/drive/root:/a/b/c:"
-  protected p(odPath: string): string {
-    const encoded = odPath.split('/').map(seg => encodeURIComponent(seg)).join('/');
-    return `/me/drive/root:/${encoded}:`;
+  protected encode(odPath: string): string {
+    const encoded = odPath
+      .split("/")
+      .map((seg) => encodeURIComponent(seg))
+      .join("/");
+    return `${encoded}:`;
   }
 
-  protected async gFetch(path: string, opts: RequestInit = {}, rawBody = false): Promise<Response> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${this.token ?? await this.setToken()}` };
-    if (!rawBody && opts.body && typeof opts.body === 'string') {
-      headers['Content-Type'] = 'application/json';
+  protected async gFetch(
+    path: string,
+    opts: RequestInit = {},
+    rawBody = false,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
+    };
+    if (!rawBody && opts.body && typeof opts.body === "string") {
+      headers["Content-Type"] = "application/json";
     }
     const resp = await fetch(`${GRAPH}${path}`, { ...opts, headers });
     if (!resp.ok) {
       let msg = resp.statusText;
-      try { const e = await resp.json() as { error?: { message?: string } }; msg = e.error?.message ?? msg; } catch {}
+      try {
+        const e = (await resp.json()) as { error?: { message?: string } };
+        msg = e.error?.message ?? msg;
+      } catch {}
       throw new Error(`Graph ${resp.status}: ${msg}`);
     }
     return resp;
   }
 
   async ensureFolder(folderPath: string): Promise<void> {
-    try { await this.gFetch(this.p(folderPath)); return; } catch {}
-    const parts = folderPath.split('/');
-    const name  = parts.pop()!;
-    const parentPath = parts.join('/');
+    try {
+      await this.gFetch(this.encode(folderPath));
+      return;
+    } catch {}
+    const parts = folderPath.split("/");
+    const name = parts.pop()!;
+    const parentPath = parts.join("/");
     const parentEndpoint = parentPath
-      ? `${this.p(parentPath)}/children`
-      : `/me/drive/root/children`;
+      ? `${GRAPH}${this.encode(parentPath)}/children`
+      : `${GRAPH}children`;
     await this.gFetch(parentEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        folder: {},
+        "@microsoft.graph.conflictBehavior": "rename",
+      }),
     });
   }
 
   protected async listFolder(folderPath: string): Promise<GraphDriveItem[]> {
     const resp = await this.gFetch(
-      `${this.p(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
+      `${this.encode(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
     );
-    const data = await resp.json() as { value: GraphDriveItem[] };
+    const data = (await resp.json()) as { value: GraphDriveItem[] };
     return data.value ?? [];
   }
 
   protected async readFilePath(filePath: string): Promise<ArrayBuffer> {
-    const resp  = await fetch(`${GRAPH}${this.p(filePath)}/content`, {
-      headers: { Authorization: `Bearer ${this.token ?? await this.setToken()}` },
+    const resp = await fetch(`${GRAPH}${this.encode(filePath)}/content`, {
+      headers: {
+        Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
+      },
     });
     if (!resp.ok) throw new Error(`Read ${filePath}: ${resp.status}`);
     return resp.arrayBuffer();
   }
 
-  private async writeFilePath(filePath: string, data: ArrayBuffer | string, mimeType: string): Promise<void> {
-    
-    const body  = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    const resp  = await fetch(`${GRAPH}${this.p(filePath)}/content`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${this.token ?? await this.setToken()}`, 'Content-Type': mimeType },
+  private async writeFilePath(
+    filePath: string,
+    data: ArrayBuffer | string,
+    mimeType: string,
+  ): Promise<void> {
+    const body =
+      typeof data === "string" ? new TextEncoder().encode(data) : data;
+    const resp = await fetch(`${GRAPH}${this.encode(filePath)}/content`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
+        "Content-Type": mimeType,
+      },
       body,
     });
     if (!resp.ok) {
       let msg = resp.statusText;
-      try { const e = await resp.json() as { error?: { message?: string } }; msg = e.error?.message ?? msg; } catch {}
+      try {
+        const e = (await resp.json()) as { error?: { message?: string } };
+        msg = e.error?.message ?? msg;
+      } catch {}
       throw new Error(`Write ${filePath}: ${msg}`);
     }
   }
 
-  protected async writeFileLarge(filePath: string, data: ArrayBuffer, mimeType: string): Promise<void> {
+  protected async writeFileLarge(
+    filePath: string,
+    data: ArrayBuffer,
+    mimeType: string,
+  ): Promise<void> {
     if (data.byteLength <= 4 * 1024 * 1024) {
       await this.writeFilePath(filePath, data, mimeType);
       return;
     }
-    const sessResp = await this.gFetch(`${this.p(filePath)}/createUploadSession`, {
-      method: 'POST',
-      body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
-    });
-    const { uploadUrl } = await sessResp.json() as { uploadUrl: string };
+    const sessResp = await this.gFetch(
+      `${this.encode(filePath)}/createUploadSession`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          item: { "@microsoft.graph.conflictBehavior": "replace" },
+        }),
+      },
+    );
+    const { uploadUrl } = (await sessResp.json()) as { uploadUrl: string };
     const chunk = 10 * 1024 * 1024;
     for (let off = 0; off < data.byteLength; off += chunk) {
       const end = Math.min(off + chunk, data.byteLength);
-      const r   = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Range': `bytes ${off}-${end - 1}/${data.byteLength}` },
+      const r = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Range": `bytes ${off}-${end - 1}/${data.byteLength}`,
+        },
         body: data.slice(off, end),
       });
-      if (!r.ok && r.status !== 202) throw new Error(`Chunk upload failed at ${off}`);
+      if (!r.ok && r.status !== 202)
+        throw new Error(`Chunk upload failed at ${off}`);
     }
   }
 
   protected async deleteFilePath(filePath: string): Promise<void> {
-    await this.gFetch(`${this.p(filePath)}`, { method: 'DELETE' });
+    await this.gFetch(`${this.encode(filePath)}`, { method: "DELETE" });
   }
 
   protected async readJson<T>(filePath: string): Promise<T | null> {
     try {
-      const buf  = await this.readFilePath(filePath);
+      const buf = await this.readFilePath(filePath);
       const text = new TextDecoder().decode(buf);
       return JSON.parse(text) as T;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   protected async writeJson(filePath: string, data: unknown): Promise<void> {
-    await this.writeFilePath(filePath, JSON.stringify(data, null, 2), 'application/json');
+    await this.writeFilePath(
+      filePath,
+      JSON.stringify(data, null, 2),
+      "application/json",
+    );
+  }
+
+  private get appConfigPath(): string {
+    return `${this.rootFolder}/${APP_CONFIG_FILE}`;
+  }
+
+  protected async readAppConfig(): Promise<{ apiKey?: string } | null> {
+    return this.readJson<{ apiKey?: string }>(this.appConfigPath);
+  }
+
+  protected async writeAppConfig(cfg: { apiKey?: string }): Promise<void> {
+    await this.writeJson(this.appConfigPath, cfg);
+  }
+
+  protected async loadApiKey(): Promise<void> {
+    try {
+      const cfg = await this.readAppConfig();
+      if (cfg?.apiKey) setStoredKey(cfg.apiKey);
+    } catch {}
   }
 
   async initRootStructure(): Promise<void> {
     const r = this.rootFolder;
     await this.ensureFolder(r);
-    await this.ensureFolder(`${r}/_Skills`);
-    await this.ensureFolder(`${r}/Affaires`);
-    await this.ensureFolder(`${r}/Bibliotheque`);
-    for (const d of ['Commercial','Fiscal','Social','Civil','Penal','Immobilier','International']) {
-      await this.ensureFolder(`${r}/Bibliotheque/${d}`);
+    await this.ensureFolder(`${r}/${FOLDER_SKILLS}`);
+    await this.ensureFolder(`${r}/${FOLDER_CASES}`);
+    await this.ensureFolder(`${r}/${FOLDER_LIBRARY}`);
+    for (const d of [
+      "Commercial",
+      "Fiscal",
+      "Social",
+      "Civil",
+      "Penal",
+      "Immobilier",
+      "International",
+    ]) {
+      await this.ensureFolder(`${r}/${FOLDER_LIBRARY}/${d}`);
     }
+    const existing = await this.readAppConfig();
+    if (!existing) await this.writeAppConfig({});
   }
 }
 
@@ -294,7 +381,7 @@ class Cases extends Folders {
 
   // ─── Path helpers ─────────────────────────────────────────────────────────────
 
-  protected casePath = (f: string) => `${this.rootFolder}/Affaires/${f}`;
+  protected casePath = (f: string) => `${this.rootFolder}/${FOLDER_CASES}/${f}`;
   private metaPath = (f: string) => `${this.casePath(f)}/_meta.json`;
   private notesPath = (f: string) => `${this.casePath(f)}/_notes.json`;
   private convPath = (f: string) => `${this.casePath(f)}/_conversation.json`;
@@ -306,11 +393,11 @@ class Cases extends Folders {
   }
 
   private async writeCaseMeta(
-    folderName: string,
+    subFolderName: string,
     meta: CaseMeta,
   ): Promise<void> {
-    await this.ensureFolder(this.casePath(folderName));
-    await this.writeJson(this.metaPath(folderName), meta);
+    await this.ensureFolder(this.casePath(subFolderName));
+    await this.writeJson(this.metaPath(subFolderName), meta);
   }
 
   private async readNotes(folderName: string): Promise<PermanentNote[]> {
@@ -343,7 +430,7 @@ class Cases extends Folders {
 
   private async listCaseFolders(): Promise<string[]> {
     try {
-      const items = await this.listFolder(`${this.rootFolder}/Affaires`);
+      const items = await this.listFolder(`${this.rootFolder}/${FOLDER_CASES}`);
       return items.filter((i) => i.folder).map((i) => i.name);
     } catch {
       return [];
@@ -411,11 +498,11 @@ class Cases extends Folders {
   // ─── Skills ───────────────────────────────────────────────────────────────────
   /** Called by main.ts after fetchSkills() to load skills into both modules */
   async fetchSkills(): Promise<Array<{ name: string; content: string }>> {
-    const path = `${this.rootFolder}/_Skills`;
+    const path = `${this.rootFolder}/${FOLDER_SKILLS}`;
     let items: GraphDriveItem[];
     try {
-      items = (await this.listFolder(path))
-      items = items.filter(item => !item.folder);
+      items = await this.listFolder(path);
+      items = items.filter((item) => !item.folder);
     } catch {
       return [];
     }
@@ -425,9 +512,7 @@ class Cases extends Folders {
       const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
       if (!["md", "txt"].includes(ext)) continue;
       try {
-        const buf = await this.readFilePath(
-          `${path}/${item.name}`,
-        );
+        const buf = await this.readFilePath(`${path}/${item.name}`);
         skills.push({
           name: item.name,
           content: new TextDecoder().decode(buf),
@@ -446,6 +531,7 @@ class Cases extends Folders {
   // ─── Load all cases ───────────────────────────────────────────────────────────
 
   async loadAllCases(): Promise<void> {
+    await this.loadApiKey();
     const folders = await this.listCaseFolders();
     this.cases = [];
     await Promise.all(
@@ -512,6 +598,7 @@ class Cases extends Folders {
       this.oneDriveUser = this.getSignedInUser();
       this.updateODStatus();
       await this.initRootStructure();
+      await this.loadApiKey();
       await this.loadAllCases();
       const skills = await this.fetchSkills();
       this.syncSkills(skills);
@@ -1195,7 +1282,7 @@ class Cases extends Folders {
     dialog.innerHTML = `
       <h2 class="modal-title">⚙ Paramètres</h2>
       <h3 class="settings-section-title">Clé API Claude (Anthropic)</h3>
-      <p class="settings-hint">Stockée dans localStorage. Transmise uniquement à api.anthropic.com.</p>
+      <p class="settings-hint">Stockée dans <code>_config.json</code> sur OneDrive. Transmise uniquement à api.anthropic.com.</p>
       <input class="form-input" id="s-api" type="password" placeholder="sk-ant-api03-…" value="${getStoredKey()}" autocomplete="off"/>
       <div style="display:flex;gap:8px;margin-top:6px">
         <button class="btn btn--primary btn--sm" id="s-api-save">Enregistrer</button>
@@ -1227,18 +1314,31 @@ class Cases extends Folders {
       if (e.target === overlay) overlay.remove();
     });
     qs<HTMLButtonElement>("#s-close", dialog).onclick = () => overlay.remove();
-    qs<HTMLButtonElement>("#s-api-save", dialog).onclick = () => {
+    qs<HTMLButtonElement>("#s-api-save", dialog).onclick = async () => {
       const v = qs<HTMLInputElement>("#s-api", dialog).value.trim();
-      if (!v) {
-        toast("Clé vide.", "error");
-        return;
-      }
+      if (!v) { toast("Clé vide.", "error"); return; }
       setStoredKey(v);
-      toast("Clé API enregistrée.", "success");
+      if (this.oneDriveUser) {
+        try {
+          const existing = await this.readAppConfig() ?? {};
+          await this.writeAppConfig({ ...existing, apiKey: v });
+          toast("Clé API enregistrée sur OneDrive.", "success");
+        } catch {
+          toast("Clé mémorisée mais non sauvegardée sur OneDrive (erreur).", "error");
+        }
+      } else {
+        toast("Clé mémorisée pour cette session. Connectez OneDrive pour la sauvegarder définitivement.", "info");
+      }
     };
-    qs<HTMLButtonElement>("#s-api-clear", dialog).onclick = () => {
+    qs<HTMLButtonElement>("#s-api-clear", dialog).onclick = async () => {
       clearStoredKey();
       qs<HTMLInputElement>("#s-api", dialog).value = "";
+      if (this.oneDriveUser) {
+        try {
+          const existing = await this.readAppConfig() ?? {};
+          await this.writeAppConfig({ ...existing, apiKey: '' });
+        } catch {}
+      }
       toast("Clé effacée.", "info");
     };
     qs<HTMLButtonElement>("#s-od-save", dialog).onclick = () => {
@@ -1307,28 +1407,32 @@ class Cases extends Folders {
       "btn-upload",
     ) as HTMLButtonElement | null;
 
-    [newTopBtn, newSideBtn]
-      .forEach(btn => onClick(btn, () => this.openCaseFormModal(null)));
+    [newTopBtn, newSideBtn].forEach((btn) =>
+      onClick(btn, () => this.openCaseFormModal(null)),
+    );
 
     onClick(settingsBtn, () => this.openSettingsModal());
-  
+
     onClick(odTopBtn, async () => {
-        if (!this.oneDriveUser) await this.connectOneDrive();
-        else await this.refreshCaseFromOneDrive();
+      if (!this.oneDriveUser) await this.connectOneDrive();
+      else await this.refreshCaseFromOneDrive();
     });
     onClick(notesBtn, () => this.openNotesModal());
     onClick(odSyncBtn, () => this.refreshCaseFromOneDrive());
     onClick(uploadBtn, () => fileInput?.click());
-    
+
     const tabs = qsa<HTMLButtonElement>(".doc-filter-tab");
-    tabs.forEach(tab => onClick(tab, () => {
+    tabs.forEach((tab) =>
+      onClick(tab, () => {
         setActive(tabs, tab, "active");
         this.docFilter = (tab.dataset.filter ?? "all") as typeof this.docFilter;
         this.renderDocList();
-      }));
-    
+      }),
+    );
+
     const btns = qsa<HTMLButtonElement>(".mode-btn[data-mode]");
-    btns.forEach(btn =>onClick(btn, () => {
+    btns.forEach((btn) =>
+      onClick(btn, () => {
         setActive(btns, btn, "active");
         this.activeMode = btn.dataset.mode as WorkMode;
         const hints: Record<WorkMode, string> = {
@@ -1342,28 +1446,28 @@ class Cases extends Folders {
         const ta = document.getElementById(
           "user-input",
         ) as HTMLTextAreaElement | null;
-        if(!ta) return;
+        if (!ta) return;
         ta.placeholder = hints[this.activeMode];
-      })
+      }),
     );
 
-        const summBtn = document.getElementById(
-          "btn-case-summary",
-        ) as HTMLButtonElement | null;
-        
-        onClick(summBtn, async () => {
-            const ta = document.getElementById(
-              "user-input",
-            ) as HTMLTextAreaElement | null;
-          if (!ta) return;
-            ta.value =
-              "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
-            await this.sendMessage();
-          });
-      
-    function onClick(btn: HTMLButtonElement|null, action: Function) {
+    const summBtn = document.getElementById(
+      "btn-case-summary",
+    ) as HTMLButtonElement | null;
+
+    onClick(summBtn, async () => {
+      const ta = document.getElementById(
+        "user-input",
+      ) as HTMLTextAreaElement | null;
+      if (!ta) return;
+      ta.value =
+        "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
+      await this.sendMessage();
+    });
+
+    function onClick(btn: HTMLButtonElement | null, action: Function) {
       if (!btn) return;
-      btn.onclick = ()=>action()
+      btn.onclick = () => action();
     }
   }
 
@@ -1576,34 +1680,35 @@ class Cases extends Folders {
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
 
 export class Library extends Cases {
-  private activeDomain: LibDomain | 'all' = 'all';
+  private activeDomain: LibDomain | "all" = "all";
   private domainDocs = new Map<string, LibDocumentMeta[]>();
   private libMessages: LibConversationMessage[] = [];
 
   readonly DOMAINS: Array<{ id: LibDomain; label: string; icon: string }> = [
-    { id: 'commercial',    label: 'Commercial',    icon: '🏢' },
-    { id: 'fiscal',        label: 'Fiscal',        icon: '💰' },
-    { id: 'social',        label: 'Social',        icon: '👥' },
-    { id: 'civil',         label: 'Civil',         icon: '⚖️' },
-    { id: 'penal',         label: 'Pénal',         icon: '🔒' },
-    { id: 'immobilier',    label: 'Immobilier',    icon: '🏠' },
-    { id: 'international', label: 'International', icon: '🌐' },
-    { id: 'autre',         label: 'Autre',         icon: '📚' },
+    { id: "commercial", label: "Commercial", icon: "🏢" },
+    { id: "fiscal", label: "Fiscal", icon: "💰" },
+    { id: "social", label: "Social", icon: "👥" },
+    { id: "civil", label: "Civil", icon: "⚖️" },
+    { id: "penal", label: "Pénal", icon: "🔒" },
+    { id: "immobilier", label: "Immobilier", icon: "🏠" },
+    { id: "international", label: "International", icon: "🌐" },
+    { id: "autre", label: "Autre", icon: "📚" },
   ];
 
-  domainLabel(id: LibDomain | 'all'): string {
-    if (id === 'all') return 'Tous domaines';
-    return this.DOMAINS.find(d => d.id === id)?.label ?? id;
+  domainLabel(id: LibDomain | "all"): string {
+    if (id === "all") return "Tous domaines";
+    return this.DOMAINS.find((d) => d.id === id)?.label ?? id;
   }
 
   // ─── Path helpers ─────────────────────────────────────────────────────────────
 
-  private libDomainFolder(domain: string): string {
-    const cap = domain.charAt(0).toUpperCase() + domain.slice(1);
-    return `${this.rootFolder}/Bibliotheque/${cap}`;
+  private libDomainFolder(subFolder: string): string {
+    const cap = subFolder.charAt(0).toUpperCase() + subFolder.slice(1);
+    return `${this.rootFolder}/${FOLDER_LIBRARY}/${cap}`;
   }
-  private libMetaPath(domain: string): string { return `${this.libDomainFolder(domain)}/_meta.json`; }
-  
+  private libMetaPath(subFolder: string): string {
+    return `${this.libDomainFolder(subFolder)}/_meta.json`;
+  }
 
   // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
@@ -1611,9 +1716,9 @@ export class Library extends Cases {
     return this.readJson<LibDomainMeta>(this.libMetaPath(domain));
   }
 
-  async writeLibMeta(domain: string, meta: LibDomainMeta): Promise<void> {
-    await this.ensureFolder(this.libDomainFolder(domain));
-    await this.writeJson(this.libMetaPath(domain), meta);
+  async writeLibMeta(meta: LibDomainMeta): Promise<void> {
+    await this.ensureFolder(this.libDomainFolder(meta.domain));
+    await this.writeJson(this.libMetaPath(meta.domain), meta);
   }
 
   private async readLibConversation(): Promise<LibConversationMessage[]> {
@@ -1622,31 +1727,44 @@ export class Library extends Cases {
     return f?.messages ?? [];
   }
 
-  private async writeLibConversation(messages: LibConversationMessage[]): Promise<void> {
+  private async writeLibConversation(
+    messages: LibConversationMessage[],
+  ): Promise<void> {
     const path = this.getConvPath();
-      await this.writeJson(path, { messages });
-    }
-    
-    private getConvPath() {
-      return this.activeDomain === "all"
-        ? `${this.rootFolder}/Bibliotheque/_conversation.json`
-        : `${this.libDomainFolder(this.activeDomain)}/_conversation.json`;
+    await this.writeJson(path, { messages });
+  }
+
+  private getConvPath() {
+    return this.activeDomain === "all"
+      ? `${this.rootFolder}/${FOLDER_LIBRARY}/_conversation.json`
+      : `${this.libDomainFolder(this.activeDomain)}/_conversation.json`;
   }
 
   async listLibFiles(domain: string): Promise<GraphDriveItem[]> {
     try {
       const items = await this.listFolder(this.libDomainFolder(domain));
-      return items.filter(i => i.file && !i.name.startsWith('_'));
-    } catch { return []; }
+      return items.filter((i) => i.file && !i.name.startsWith("_"));
+    } catch {
+      return [];
+    }
   }
 
   async readLibFile(domain: string, fileName: string): Promise<ArrayBuffer> {
     return this.readFilePath(`${this.libDomainFolder(domain)}/${fileName}`);
   }
 
-  async writeLibFile(domain: string, fileName: string, data: ArrayBuffer, mimeType: string): Promise<void> {
+  async writeLibFile(
+    domain: string,
+    fileName: string,
+    data: ArrayBuffer,
+    mimeType: string,
+  ): Promise<void> {
     await this.ensureFolder(this.libDomainFolder(domain));
-    await this.writeFileLarge(`${this.libDomainFolder(domain)}/${fileName}`, data, mimeType);
+    await this.writeFileLarge(
+      `${this.libDomainFolder(domain)}/${fileName}`,
+      data,
+      mimeType,
+    );
   }
 
   // ─── Domain meta ─────────────────────────────────────────────────────────────
@@ -1659,22 +1777,30 @@ export class Library extends Cases {
     return docs;
   }
 
-  async saveDomainMeta(domain: LibDomain, docs: LibDocumentMeta[]): Promise<void> {
+  async saveDomainMeta(
+    domain: LibDomain,
+    docs: LibDocumentMeta[],
+  ): Promise<void> {
     this.domainDocs.set(domain, docs);
-    await this.writeLibMeta(domain, { domain, documents: docs });
+    await this.writeLibMeta({ domain, documents: docs });
   }
 
   // ─── Sync from OneDrive ───────────────────────────────────────────────────────
 
   async syncDomainFromOneDrive(domain: LibDomain): Promise<number> {
-    const items    = await this.listLibFiles(domain);
+    const items = await this.listLibFiles(domain);
     const existing = await this.loadDomainMeta(domain);
     let added = 0;
     for (const item of items) {
       if (!item.file || !isSupported(item.name)) continue;
-      if (existing.some(d => d.name === item.name)) continue;
-      existing.push({ name: item.name, mimeType: item.file.mimeType || 'application/octet-stream',
-        sizeBytes: item.size ?? 0, addedAt: Date.now(), tags: [] });
+      if (existing.some((d) => d.name === item.name)) continue;
+      existing.push({
+        name: item.name,
+        mimeType: item.file.mimeType || "application/octet-stream",
+        sizeBytes: item.size ?? 0,
+        addedAt: Date.now(),
+        tags: [],
+      });
       added++;
     }
     // FIX: save to the correct domain being synced, not activeDomain
@@ -1685,8 +1811,9 @@ export class Library extends Cases {
   // ─── Boot ─────────────────────────────────────────────────────────────────────
 
   async bootLib(container: HTMLElement): Promise<void> {
-    container.innerHTML = '';
+    container.innerHTML = "";
     container.appendChild(this.buildUI());
+    await this.loadApiKey();
     // Use `this` throughout — no second instance
     this.libMessages = await this.readLibConversation().catch(() => []);
     this.renderDomainPills();
@@ -1700,43 +1827,93 @@ export class Library extends Cases {
   // ─── UI builder ───────────────────────────────────────────────────────────────
 
   buildUI(): HTMLElement {
-    const wrap    = el('div', { className: 'lib-layout' });
-    const sidebar = el('div', { className: 'lib-sidebar' });
-    const hdr     = el('div', { className: 'lib-sidebar__header' });
-    hdr.appendChild(el('span', { className: 'lib-sidebar__title', textContent: 'Bibliothèque juridique' }));
-    const skillBadge = el('span', { className: 'lib-skill-badge', id: 'lib-skill-badge' });
+    const wrap = el("div", { className: "lib-layout" });
+    const sidebar = el("div", { className: "lib-sidebar" });
+    const hdr = el("div", { className: "lib-sidebar__header" });
+    hdr.appendChild(
+      el("span", {
+        className: "lib-sidebar__title",
+        textContent: "Bibliothèque juridique",
+      }),
+    );
+    const skillBadge = el("span", {
+      className: "lib-skill-badge",
+      id: "lib-skill-badge",
+    });
     toggle(skillBadge, false);
     hdr.appendChild(skillBadge);
     sidebar.appendChild(hdr);
-    sidebar.appendChild(el('div', { className: 'lib-domain-pills', id: 'lib-domain-pills' }));
-    sidebar.appendChild(el('div', { className: 'lib-doc-list',     id: 'lib-doc-list' }));
-    const acts   = el('div', { className: 'lib-action-row' });
-    const fi     = el('input', { type: 'file', id: 'lib-file-input', multiple: true } as unknown as Partial<HTMLInputElement>);
-    (fi as HTMLInputElement).accept = '.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md';
-    fi.style.display = 'none';
-    const upBtn  = el('button', { className: 'btn btn--ghost btn--sm', textContent: '⬆ Ajouter',       id: 'btn-lib-upload' });
+    sidebar.appendChild(
+      el("div", { className: "lib-domain-pills", id: "lib-domain-pills" }),
+    );
+    sidebar.appendChild(
+      el("div", { className: "lib-doc-list", id: "lib-doc-list" }),
+    );
+    const acts = el("div", { className: "lib-action-row" });
+    const fi = el("input", {
+      type: "file",
+      id: "lib-file-input",
+      multiple: true,
+    } as unknown as Partial<HTMLInputElement>);
+    (fi as HTMLInputElement).accept =
+      ".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md";
+    fi.style.display = "none";
+    const upBtn = el("button", {
+      className: "btn btn--ghost btn--sm",
+      textContent: "⬆ Ajouter",
+      id: "btn-lib-upload",
+    });
     upBtn.onclick = () => (fi as HTMLInputElement).click();
-    const synBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '⟳ Sync OneDrive', id: 'btn-lib-sync' });
+    const synBtn = el("button", {
+      className: "btn btn--ghost btn--sm",
+      textContent: "⟳ Sync OneDrive",
+      id: "btn-lib-sync",
+    });
     synBtn.onclick = () => this.syncCurrentDomain();
     acts.append(fi, upBtn, synBtn);
     sidebar.appendChild(acts);
 
-    const main     = el('div', { className: 'lib-main' });
-    const topbar   = el('div', { className: 'lib-topbar' });
-    const domLbl   = el('span', { className: 'lib-topbar__domain', id: 'lib-active-domain', textContent: 'Tous domaines' });
-    const skillLbl = el('span', { className: 'lib-topbar__skills', id: 'lib-skills-top' });
-    const clrBtn   = el('button', { className: 'btn btn--ghost btn--sm', textContent: 'Effacer conversation' });
+    const main = el("div", { className: "lib-main" });
+    const topbar = el("div", { className: "lib-topbar" });
+    const domLbl = el("span", {
+      className: "lib-topbar_domain",
+      id: "lib-active-domain",
+      textContent: "Tous domaines",
+    });
+    const skillLbl = el("span", {
+      className: "lib-topbar__skills",
+      id: "lib-skills-top",
+    });
+    const clrBtn = el("button", {
+      className: "btn btn--ghost btn--sm",
+      textContent: "Effacer conversation",
+    });
     clrBtn.onclick = () => this.clearLibConv();
     topbar.append(domLbl, skillLbl, clrBtn);
 
-    const quickArea = el('div', { className: 'lib-quick-prompts', id: 'lib-quick-prompts' });
-    const chatArea  = el('div', { className: 'chat-area',          id: 'lib-chat-area', role: 'log' });
-    chatArea.setAttribute('aria-live', 'polite');
+    const quickArea = el("div", {
+      className: "lib-quick-prompts",
+      id: "lib-quick-prompts",
+    });
+    const chatArea = el("div", {
+      className: "chat-area",
+      id: "lib-chat-area",
+      role: "log",
+    });
+    chatArea.setAttribute("aria-live", "polite");
 
-    const inputArea = el('div', { className: 'lib-input-area' });
-    const ta        = el('textarea', { id: 'lib-input', rows: 2, placeholder: 'Interrogez la bibliothèque…' } as unknown as Partial<HTMLTextAreaElement>);
-    const sendBtn   = el('button', { className: 'btn btn--primary', id: 'lib-send-btn' });
-    sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+    const inputArea = el("div", { className: "lib-input-area" });
+    const ta = el("textarea", {
+      id: "lib-input",
+      rows: 2,
+      placeholder: "Interrogez la bibliothèque…",
+    } as unknown as Partial<HTMLTextAreaElement>);
+    const sendBtn = el("button", {
+      className: "btn btn--primary",
+      id: "lib-send-btn",
+    });
+    sendBtn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
     inputArea.append(ta, sendBtn);
     main.append(topbar, quickArea, chatArea, inputArea);
     wrap.append(sidebar, main);
@@ -1746,30 +1923,41 @@ export class Library extends Cases {
   // ─── Domain navigation ────────────────────────────────────────────────────────
 
   renderDomainPills(): void {
-    const container = document.getElementById('lib-domain-pills');
+    const container = document.getElementById("lib-domain-pills");
     if (!container) return;
-    container.innerHTML = '';
-    const all = el('button', { className: `lib-pill${this.activeDomain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
-    all.onclick = () => this.switchDomain('all');
+    container.innerHTML = "";
+    const all = el("button", {
+      className: `lib-pill${this.activeDomain === "all" ? " active" : ""}`,
+      textContent: "Tous",
+    });
+    all.onclick = () => this.switchDomain("all");
     container.appendChild(all);
     for (const d of this.DOMAINS) {
       const docs = this.domainDocs.get(d.id) ?? [];
-      const pill = el('button', { className: `lib-pill${this.activeDomain === d.id ? ' active' : ''}` });
+      const pill = el("button", {
+        className: `lib-pill${this.activeDomain === d.id ? " active" : ""}`,
+      });
       pill.textContent = `${d.icon} ${d.label}`;
-      if (docs.length) pill.appendChild(el('span', { className: 'lib-pill__count', textContent: String(docs.length) }));
+      if (docs.length)
+        pill.appendChild(
+          el("span", {
+            className: "lib-pill__count",
+            textContent: String(docs.length),
+          }),
+        );
       pill.onclick = () => this.switchDomain(d.id);
       container.appendChild(pill);
     }
   }
 
-  async switchDomain(domain: LibDomain | 'all'): Promise<void> {
+  async switchDomain(domain: LibDomain | "all"): Promise<void> {
     this.activeDomain = domain;
-    if (domain !== 'all') await this.loadDomainMeta(domain);
+    if (domain !== "all") await this.loadDomainMeta(domain);
     this.libMessages = await this.readLibConversation().catch(() => []);
     this.renderDomainPills();
     this.renderLibDocList();
     this.renderLibChat();
-    const lbl = document.getElementById('lib-active-domain');
+    const lbl = document.getElementById("lib-active-domain");
     if (lbl) lbl.textContent = this.domainLabel(domain);
     this.updateQuickPrompts();
   }
@@ -1777,36 +1965,66 @@ export class Library extends Cases {
   // ─── Render: lib doc list ─────────────────────────────────────────────────────
 
   renderLibDocList(): void {
-    const list = document.getElementById('lib-doc-list');
+    const list = document.getElementById("lib-doc-list");
     if (!list) return;
-    list.innerHTML = '';
+    list.innerHTML = "";
     let docs: LibDocumentMeta[] = [];
-    if (this.activeDomain === 'all') {
+    if (this.activeDomain === "all") {
       for (const [, d] of this.domainDocs) docs.push(...d);
     } else {
       docs = this.domainDocs.get(this.activeDomain) ?? [];
     }
     docs = docs.sort((a, b) => b.addedAt - a.addedAt);
-    if (!docs.length) { list.appendChild(el('div', { className: 'lib-doc-empty', textContent: 'Aucun document. Ajoutez ou synchronisez.' })); return; }
+    if (!docs.length) {
+      list.appendChild(
+        el("div", {
+          className: "lib-doc-empty",
+          textContent: "Aucun document. Ajoutez ou synchronisez.",
+        }),
+      );
+      return;
+    }
     for (const doc of docs) {
-      const item = el('div', { className: 'lib-doc-item' });
-      const info = el('div', { className: 'doc-info' });
-      info.append(el('div', { className: 'doc-name', textContent: doc.name }),
-        el('div', { className: 'doc-meta', textContent: `${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)} · ${formatDate(doc.addedAt)}` }));
-      const del = el('button', { className: 'doc-delete', textContent: '×', title: 'Retirer de la bibliothèque' });
-      del.onclick = async e => {
+      const item = el("div", { className: "lib-doc-item" });
+      const info = el("div", { className: "doc-info" });
+      info.append(
+        el("div", { className: "doc-name", textContent: doc.name }),
+        el("div", {
+          className: "doc-meta",
+          textContent: `${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)} · ${formatDate(doc.addedAt)}`,
+        }),
+      );
+      const del = el("button", {
+        className: "doc-delete",
+        textContent: "×",
+        title: "Retirer de la bibliothèque",
+      });
+      del.onclick = async (e) => {
         e.stopPropagation();
-        const ok = await confirm(`Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`);
+        const ok = await confirm(
+          `Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`,
+        );
         if (!ok) return;
         for (const [dom, list] of this.domainDocs) {
-          const idx = list.findIndex(d => d.name === doc.name);
-          if (idx >= 0) { list.splice(idx, 1); await this.saveDomainMeta(dom as LibDomain, list); break; }
+          const idx = list.findIndex((d) => d.name === doc.name);
+          if (idx >= 0) {
+            list.splice(idx, 1);
+            await this.saveDomainMeta(dom as LibDomain, list);
+            break;
+          }
         }
         this.renderLibDocList();
         this.renderDomainPills();
-        toast('Document retiré de la bibliothèque.', 'info');
+        toast("Document retiré de la bibliothèque.", "info");
       };
-      item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, del);
+      item.append(
+        el("span", {
+          className: "doc-icon",
+          textContent: mimeIcon(doc.mimeType),
+        }),
+        info,
+        del,
+      );
       list.appendChild(item);
     }
   }
@@ -1814,30 +2032,50 @@ export class Library extends Cases {
   // ─── Render: lib chat ─────────────────────────────────────────────────────────
 
   renderLibChat(): void {
-    const area = document.getElementById('lib-chat-area');
+    const area = document.getElementById("lib-chat-area");
     if (!area) return;
-    area.innerHTML = '';
+    area.innerHTML = "";
     if (!this.libMessages.length) {
-      area.appendChild(el('div', { className: 'empty-state' },
-        el('div', { className: 'empty-icon', textContent: '📚' }),
-        el('h2',  { textContent: 'Bibliothèque juridique' }),
-        el('p',   { textContent: 'Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.' }),
-      ));
+      area.appendChild(
+        el(
+          "div",
+          { className: "empty-state" },
+          el("div", { className: "empty-icon", textContent: "📚" }),
+          el("h2", { textContent: "Bibliothèque juridique" }),
+          el("p", {
+            textContent:
+              "Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.",
+          }),
+        ),
+      );
       return;
     }
-    for (const msg of this.libMessages) area.appendChild(this.buildLibMsgEl(msg));
+    for (const msg of this.libMessages)
+      area.appendChild(this.buildLibMsgEl(msg));
     (area as HTMLElement).scrollTop = (area as HTMLElement).scrollHeight;
   }
 
   private buildLibMsgEl(msg: LibConversationMessage): HTMLElement {
-    const wrap   = el('div', { className: `msg msg--${msg.role}` });
-    const bubble = el('div', { className: 'msg__bubble' });
+    const wrap = el("div", { className: `msg msg--${msg.role}` });
+    const bubble = el("div", { className: "msg__bubble" });
     bubble.innerHTML = renderMarkdown(msg.content);
-    wrap.append(el('div', { className: 'msg__label', textContent: msg.role === 'user' ? 'Vous' : 'Lex Assistant' }), bubble);
-    if (msg.role === 'assistant') {
-      const acts = el('div', { className: 'msg__actions' });
-      const copy = el('button', { className: 'msg-action-btn', textContent: 'Copier' });
-      copy.onclick = () => { navigator.clipboard.writeText(msg.content); toast('Copié.', 'info', 1500); };
+    wrap.append(
+      el("div", {
+        className: "msg__label",
+        textContent: msg.role === "user" ? "Vous" : "Lex Assistant",
+      }),
+      bubble,
+    );
+    if (msg.role === "assistant") {
+      const acts = el("div", { className: "msg__actions" });
+      const copy = el("button", {
+        className: "msg-action-btn",
+        textContent: "Copier",
+      });
+      copy.onclick = () => {
+        navigator.clipboard.writeText(msg.content);
+        toast("Copié.", "info", 1500);
+      };
       acts.appendChild(copy);
       wrap.appendChild(acts);
     }
@@ -1845,45 +2083,60 @@ export class Library extends Cases {
   }
 
   private appendLibMsg(msg: LibConversationMessage): void {
-    const area = document.getElementById('lib-chat-area');
+    const area = document.getElementById("lib-chat-area");
     if (!area) return;
-    area.querySelector('.empty-state')?.remove();
+    area.querySelector(".empty-state")?.remove();
     area.appendChild(this.buildLibMsgEl(msg));
     (area as HTMLElement).scrollTop = (area as HTMLElement).scrollHeight;
   }
 
   appendLibTyping(): HTMLElement {
-    const area   = document.getElementById('lib-chat-area')!;
-    const typing = el('div', { className: 'msg msg--assistant', id: 'lib-typing' });
-    const bubble = el('div', { className: 'msg__bubble' });
-    bubble.append(spinnerEl(), el('span', { textContent: ' Consultation de la bibliothèque…' }));
-    typing.append(el('div', { className: 'msg__label', textContent: 'Lex Assistant' }), bubble);
+    const area = document.getElementById("lib-chat-area")!;
+    const typing = el("div", {
+      className: "msg msg--assistant",
+      id: "lib-typing",
+    });
+    const bubble = el("div", { className: "msg__bubble" });
+    bubble.append(
+      spinnerEl(),
+      el("span", { textContent: " Consultation de la bibliothèque…" }),
+    );
+    typing.append(
+      el("div", { className: "msg__label", textContent: "Lex Assistant" }),
+      bubble,
+    );
     area.appendChild(typing);
     (area as HTMLElement).scrollTop = (area as HTMLElement).scrollHeight;
     return typing;
   }
 
   private async clearLibConv(): Promise<void> {
-    const ok = await confirm("Effacer l'historique de la bibliothèque pour ce domaine ?");
+    const ok = await confirm(
+      "Effacer l'historique de la bibliothèque pour ce domaine ?",
+    );
     if (!ok) return;
     this.libMessages = [];
     await this.writeLibConversation([]);
     this.renderLibChat();
-    toast('Conversation effacée.', 'info');
+    toast("Conversation effacée.", "info");
   }
 
   // ─── Send lib message ─────────────────────────────────────────────────────────
 
   async sendLibMessage(): Promise<void> {
-    const ta      = document.getElementById('lib-input')    as HTMLTextAreaElement | null;
-    const sendBtn = document.getElementById('lib-send-btn') as HTMLButtonElement   | null;
+    const ta = document.getElementById(
+      "lib-input",
+    ) as HTMLTextAreaElement | null;
+    const sendBtn = document.getElementById(
+      "lib-send-btn",
+    ) as HTMLButtonElement | null;
     if (!ta || !sendBtn) return;
     const text = ta.value.trim();
     if (!text) return;
-    ta.value = '';
+    ta.value = "";
 
     let docs: LibDocumentMeta[] = [];
-    if (this.activeDomain === 'all') {
+    if (this.activeDomain === "all") {
       for (const [, d] of this.domainDocs) docs.push(...d);
       for (const d of this.DOMAINS) {
         if (!this.domainDocs.has(d.id)) {
@@ -1895,14 +2148,25 @@ export class Library extends Cases {
       docs = await this.loadDomainMeta(this.activeDomain);
     }
 
-    const userMsg: LibConversationMessage = { id: uid(), role: 'user', content: text, timestamp: Date.now(), domain: this.activeDomain };
+    const userMsg: LibConversationMessage = {
+      id: uid(),
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+      domain: this.activeDomain,
+    };
     this.libMessages.push(userMsg);
     this.appendLibMsg(userMsg);
 
     const typing = this.appendLibTyping();
     sendBtn.disabled = true;
 
-    const history = this.libMessages.slice(-21, -1).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    const history = this.libMessages
+      .slice(-21, -1)
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
 
     try {
       const response = await callClaudeLib({
@@ -1911,16 +2175,26 @@ export class Library extends Cases {
         skills: this.skills,
         userMessage: text,
         history,
-        readFile: (fileName: string) => this.readLibFile(this.activeDomain === 'all' ? 'all' : this.activeDomain, fileName),
+        readFile: (fileName: string) =>
+          this.readLibFile(
+            this.activeDomain === "all" ? "all" : this.activeDomain,
+            fileName,
+          ),
       });
       typing.remove();
-      const asstMsg: LibConversationMessage = { id: uid(), role: 'assistant', content: response, timestamp: Date.now(), domain: this.activeDomain };
+      const asstMsg: LibConversationMessage = {
+        id: uid(),
+        role: "assistant",
+        content: response,
+        timestamp: Date.now(),
+        domain: this.activeDomain,
+      };
       this.libMessages.push(asstMsg);
       this.appendLibMsg(asstMsg);
       await this.writeLibConversation(this.libMessages);
     } catch (err) {
       typing.remove();
-      toast((err as Error).message, 'error', 6000);
+      toast((err as Error).message, "error", 6000);
       this.libMessages.pop();
     } finally {
       sendBtn.disabled = false;
@@ -1931,122 +2205,197 @@ export class Library extends Cases {
   // ─── Sync current domain ──────────────────────────────────────────────────────
 
   async syncCurrentDomain(): Promise<void> {
-    const btn = document.getElementById('btn-lib-sync') as HTMLButtonElement | null;
-    if (btn) { btn.disabled = true; btn.textContent = '⟳ Sync…'; }
+    const btn = document.getElementById(
+      "btn-lib-sync",
+    ) as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "⟳ Sync…";
+    }
     try {
       let total = 0;
-      if (this.activeDomain === 'all') {
-        for (const d of this.DOMAINS) total += await this.syncDomainFromOneDrive(d.id);
+      if (this.activeDomain === "all") {
+        for (const d of this.DOMAINS)
+          total += await this.syncDomainFromOneDrive(d.id);
       } else {
         total = await this.syncDomainFromOneDrive(this.activeDomain);
       }
       this.renderLibDocList();
       this.renderDomainPills();
-      toast(`${total} nouveau(x) document(s) indexé(s).`, 'success');
-    } catch (err) { toast('Erreur sync : ' + (err as Error).message, 'error'); }
-    finally { if (btn) { btn.disabled = false; btn.textContent = '⟳ Sync OneDrive'; } }
+      toast(`${total} nouveau(x) document(s) indexé(s).`, "success");
+    } catch (err) {
+      toast("Erreur sync : " + (err as Error).message, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "⟳ Sync OneDrive";
+      }
+    }
   }
 
   // ─── Quick prompts ────────────────────────────────────────────────────────────
 
   updateQuickPrompts(): void {
-    const area = document.getElementById('lib-quick-prompts');
+    const area = document.getElementById("lib-quick-prompts");
     if (!area) return;
-    area.innerHTML = '';
+    area.innerHTML = "";
     const prompts: Record<string, string[]> = {
-      commercial:   ["Jurisprudence récente sur la responsabilité du dirigeant pour insuffisance d'actif.",
-                     "Conditions de validité d'une clause de non-concurrence en droit commercial français.",
-                     "Règles applicables à la cession de fonds de commerce."],
-      fiscal:       ["Analyse la jurisprudence sur l'abus de droit fiscal (LPF art. L.64).",
-                     "Conditions d'application de l'acte anormal de gestion.",
-                     "Jurisprudence récente sur la déductibilité des charges en IS."],
-      social:       ["Conditions de validité du licenciement pour motif économique.",
-                     "Analyse jurisprudentielle du harcèlement moral au travail.",
-                     "Règles applicables au transfert du contrat de travail (L.1224-1 CT)."],
-      civil:        ["Jurisprudence récente sur la responsabilité délictuelle.",
-                     "Conditions de la résolution pour inexécution (C.civ. art. 1224).",
-                     "Évolutions de la jurisprudence sur le préjudice moral."],
-      penal:        ["Éléments constitutifs de l'abus de biens sociaux.",
-                     "Jurisprudence sur la complicité en droit pénal des affaires.",
-                     "Conditions de mise en cause de la responsabilité pénale des personnes morales."],
-      immobilier:   ["Régime des baux commerciaux : droit au renouvellement et indemnité d'éviction.",
-                     "Conditions de l'action en garantie des vices cachés en droit immobilier.",
-                     "Jurisprudence sur la responsabilité du promoteur immobilier."],
-      international:["Conditions d'applicabilité des conventions fiscales bilatérales.",
-                     "Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).",
-                     "Règles de conflit de lois en matière successorale (Règl. UE 650/2012)."],
-      all:          ["Quels sont les documents disponibles dans la bibliothèque ?",
-                     "Synthèse des principales règles jurisprudentielles sur la responsabilité civile.",
-                     "Analyse comparative des régimes de responsabilité civile et pénale du dirigeant."],
+      commercial: [
+        "Jurisprudence récente sur la responsabilité du dirigeant pour insuffisance d'actif.",
+        "Conditions de validité d'une clause de non-concurrence en droit commercial français.",
+        "Règles applicables à la cession de fonds de commerce.",
+      ],
+      fiscal: [
+        "Analyse la jurisprudence sur l'abus de droit fiscal (LPF art. L.64).",
+        "Conditions d'application de l'acte anormal de gestion.",
+        "Jurisprudence récente sur la déductibilité des charges en IS.",
+      ],
+      social: [
+        "Conditions de validité du licenciement pour motif économique.",
+        "Analyse jurisprudentielle du harcèlement moral au travail.",
+        "Règles applicables au transfert du contrat de travail (L.1224-1 CT).",
+      ],
+      civil: [
+        "Jurisprudence récente sur la responsabilité délictuelle.",
+        "Conditions de la résolution pour inexécution (C.civ. art. 1224).",
+        "Évolutions de la jurisprudence sur le préjudice moral.",
+      ],
+      penal: [
+        "Éléments constitutifs de l'abus de biens sociaux.",
+        "Jurisprudence sur la complicité en droit pénal des affaires.",
+        "Conditions de mise en cause de la responsabilité pénale des personnes morales.",
+      ],
+      immobilier: [
+        "Régime des baux commerciaux : droit au renouvellement et indemnité d'éviction.",
+        "Conditions de l'action en garantie des vices cachés en droit immobilier.",
+        "Jurisprudence sur la responsabilité du promoteur immobilier.",
+      ],
+      international: [
+        "Conditions d'applicabilité des conventions fiscales bilatérales.",
+        "Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).",
+        "Règles de conflit de lois en matière successorale (Règl. UE 650/2012).",
+      ],
+      all: [
+        "Quels sont les documents disponibles dans la bibliothèque ?",
+        "Synthèse des principales règles jurisprudentielles sur la responsabilité civile.",
+        "Analyse comparative des régimes de responsabilité civile et pénale du dirigeant.",
+      ],
     };
     const list = prompts[this.activeDomain] ?? prompts.all;
     for (const p of list) {
-      const btn = el('button', { className: 'quick-btn', textContent: p });
-      btn.onclick = () => { const ta = document.getElementById('lib-input') as HTMLTextAreaElement; if (ta) { ta.value = p; ta.focus(); } };
+      const btn = el("button", { className: "quick-btn", textContent: p });
+      btn.onclick = () => {
+        const ta = document.getElementById("lib-input") as HTMLTextAreaElement;
+        if (ta) {
+          ta.value = p;
+          ta.focus();
+        }
+      };
       area.appendChild(btn);
     }
   }
 
   setupLibInput(): void {
-    const ta      = document.getElementById('lib-input')    as HTMLTextAreaElement | null;
-    const sendBtn = document.getElementById('lib-send-btn') as HTMLButtonElement   | null;
+    const ta = document.getElementById(
+      "lib-input",
+    ) as HTMLTextAreaElement | null;
+    const sendBtn = document.getElementById(
+      "lib-send-btn",
+    ) as HTMLButtonElement | null;
     if (!ta || !sendBtn) return;
-    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; });
-    ta.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendLibMessage(); } });
+    ta.addEventListener("input", () => {
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+    });
+    ta.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        this.sendLibMessage();
+      }
+    });
     sendBtn.onclick = () => this.sendLibMessage();
     this.updateQuickPrompts();
   }
 
   setupLibUpload(): void {
-    const fi = document.getElementById('lib-file-input') as HTMLInputElement | null;
+    const fi = document.getElementById(
+      "lib-file-input",
+    ) as HTMLInputElement | null;
     if (!fi) return;
     fi.onchange = async () => {
       if (!fi.files?.length) return;
       const domain = await this.pickDomainModal();
       if (!domain) return;
       for (const file of Array.from(fi.files)) {
-        if (!isSupported(file.name)) { toast(`Format non supporté : ${file.name}`, 'error'); continue; }
+        if (!isSupported(file.name)) {
+          toast(`Format non supporté : ${file.name}`, "error");
+          continue;
+        }
         try {
-          const ab   = await file.arrayBuffer();
+          const ab = await file.arrayBuffer();
           const meta = makeLibDocMeta(file);
           await this.writeLibFile(domain, file.name, ab, meta.mimeType);
           const existing = await this.loadDomainMeta(domain);
-          if (!existing.some(d => d.name === file.name)) { existing.push(meta); await this.saveDomainMeta(domain, existing); }
-          toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, 'success');
-        } catch (err) { toast(`Erreur : ${(err as Error).message}`, 'error'); }
+          if (!existing.some((d) => d.name === file.name)) {
+            existing.push(meta);
+            await this.saveDomainMeta(domain, existing);
+          }
+          toast(
+            `"${file.name}" ajouté à ${this.domainLabel(domain)}.`,
+            "success",
+          );
+        } catch (err) {
+          toast(`Erreur : ${(err as Error).message}`, "error");
+        }
       }
-      fi.value = '';
+      fi.value = "";
       this.renderLibDocList();
       this.renderDomainPills();
     };
   }
 
   updateLibSkillIndicator(): void {
-    const badge = document.getElementById('lib-skill-badge');
-    const top   = document.getElementById('lib-skills-top');
-    const n     = this.skills.length;
-    if (badge) { badge.textContent = n > 0 ? `${n} skill${n > 1 ? 's' : ''}` : ''; toggle(badge as HTMLElement, n > 0); }
-    if (top)   { top.textContent   = n > 0 ? `${n} skill${n > 1 ? 's' : ''} actif${n > 1 ? 's' : ''}` : ''; }
+    const badge = document.getElementById("lib-skill-badge");
+    const top = document.getElementById("lib-skills-top");
+    const n = this.skills.length;
+    if (badge) {
+      badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";
+      toggle(badge as HTMLElement, n > 0);
+    }
+    if (top) {
+      top.textContent =
+        n > 0 ? `${n} skill${n > 1 ? "s" : ""} actif${n > 1 ? "s" : ""}` : "";
+    }
   }
 
   // ─── Domain picker modal ──────────────────────────────────────────────────────
 
   private pickDomainModal(): Promise<LibDomain | null> {
-    return new Promise(resolve => {
-      const overlay = el('div', { className: 'modal-overlay' });
-      const dialog  = el('div', { className: 'modal-dialog' });
-      dialog.innerHTML = '<h2 class="modal-title">Domaine juridique</h2><p class="modal-subtitle">Dans quel domaine classer ce(s) document(s) ?</p>';
-      const grid = el('div', { className: 'domain-grid' });
+    return new Promise((resolve) => {
+      const overlay = el("div", { className: "modal-overlay" });
+      const dialog = el("div", { className: "modal-dialog" });
+      dialog.innerHTML =
+        '<h2 class="modal-title">Domaine juridique</h2><p class="modal-subtitle">Dans quel domaine classer ce(s) document(s) ?</p>';
+      const grid = el("div", { className: "domain-grid" });
       for (const d of this.DOMAINS) {
-        const btn = el('button', { className: 'domain-btn' });
+        const btn = el("button", { className: "domain-btn" });
         btn.innerHTML = `<span class="domain-btn__icon">${d.icon}</span><span>${d.label}</span>`;
-        btn.onclick = () => { overlay.remove(); resolve(d.id); };
+        btn.onclick = () => {
+          overlay.remove();
+          resolve(d.id);
+        };
         grid.appendChild(btn);
       }
       dialog.appendChild(grid);
-      const cancel = el('button', { className: 'btn btn--secondary', textContent: 'Annuler' });
-      cancel.style.marginTop = '16px';
-      cancel.onclick = () => { overlay.remove(); resolve(null); };
+      const cancel = el("button", {
+        className: "btn btn--secondary",
+        textContent: "Annuler",
+      });
+      cancel.style.marginTop = "16px";
+      cancel.onclick = () => {
+        overlay.remove();
+        resolve(null);
+      };
       dialog.appendChild(cancel);
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
