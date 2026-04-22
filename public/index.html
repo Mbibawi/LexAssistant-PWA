@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0C2340" />
+  <title>Lex Assistant</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Topbar ── -->
+  <header id="topbar">
+    <div class="topbar__left">
+      <span class="topbar__logo">⚖</span>
+      <span class="topbar__brand">Lex Assistant</span>
+
+      <!-- Module tabs -->
+      <div class="module-tabs">
+        <button class="module-tab active" id="tab-dossiers">Dossiers</button>
+        <button class="module-tab" id="tab-bibliotheque">Bibliothèque</button>
+      </div>
+    </div>
+    <div class="topbar__right">
+      <span id="onedrive-status" class="od-status od-status--disconnected">OneDrive</span>
+      <span id="skills-badge" class="skills-badge" style="display:none"></span>
+      <button id="btn-onedrive" class="btn btn--ghost btn--sm" title="OneDrive">☁ OneDrive</button>
+      <button id="btn-new-item-top" class="btn btn--ghost btn--sm">+ Dossier</button>
+      <button id="btn-settings" class="btn btn--ghost btn--sm" title="Paramètres">⚙</button>
+    </div>
+  </header>
+
+  <!-- ── Module 1 : Dossiers ── -->
+  <div id="panel-dossiers" id="main-layout">
+    <div id="main-layout">
+
+      <!-- Sidebar -->
+      <aside id="sidebar">
+        <div class="sidebar__section-title">Dossiers</div>
+        <div id="case-list"></div>
+        <button id="btn-new-item-sidebar" class="btn btn--ghost btn--dashed">+ Nouveau dossier</button>
+
+        <div class="sidebar__divider"></div>
+
+        <div class="sidebar__section-title">
+          Pièces
+          <span id="doc-count" class="doc-count">0 pièce</span>
+        </div>
+
+        <div class="doc-filter-tabs">
+          <button class="doc-filter-tab active" data-filter="all">Tout</button>
+          <button class="doc-filter-tab" data-filter="piece">Pièces</button>
+          <button class="doc-filter-tab" data-filter="jurisprudence">Juris.</button>
+          <button class="doc-filter-tab" data-filter="doctrine">Doctrine</button>
+          <button class="doc-filter-tab" data-filter="redige">Rédigés</button>
+        </div>
+
+        <div id="doc-list" class="doc-list"></div>
+
+        <div class="sidebar__upload-row">
+          <input type="file" id="file-input" multiple
+            accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md,.rtf"
+            style="display:none" />
+          <button id="btn-upload" class="btn btn--ghost btn--sm">⬆ Upload</button>
+          <button id="btn-od-sync" class="btn btn--ghost btn--sm">☁ Sync</button>
+          <button id="btn-notes-open" class="btn btn--ghost btn--sm">📌 Notes</button>
+        </div>
+      </aside>
+
+      <!-- Workspace -->
+      <div id="workspace">
+        <div id="mode-bar">
+          <span class="mode-bar__label">Mode :</span>
+          <button class="mode-btn active" data-mode="analyse">Analyse</button>
+          <button class="mode-btn" data-mode="redaction">Rédaction</button>
+          <button class="mode-btn" data-mode="modification">Modification</button>
+          <button class="mode-btn" data-mode="note">Note permanente</button>
+          <div class="mode-bar__spacer"></div>
+          <button id="btn-case-summary" class="btn btn--ghost btn--sm">Point dossier ↗</button>
+        </div>
+
+        <div id="note-bar" class="note-bar" style="display:none"></div>
+
+        <div id="chat-area" class="chat-area" role="log" aria-live="polite"></div>
+
+        <div id="quick-prompts">
+          <button class="quick-btn" data-prompt="Analyse les risques juridiques et fiscaux du dossier et liste les points d'attention prioritaires.">Risques du dossier</button>
+          <button class="quick-btn" data-prompt="Rédige une mise en demeure formelle à la partie adverse sur la base des pièces du dossier.">Mise en demeure</button>
+          <button class="quick-btn" data-prompt="Fais une synthèse chronologique des faits pertinents issus des pièces du dossier.">Chronologie des faits</button>
+          <button class="quick-btn" data-prompt="Analyse les données chiffrées des tableaux Excel du dossier et leurs implications juridiques et fiscales.">Analyse chiffrée</button>
+          <button class="quick-btn" data-prompt="Rédige un mémorandum juridique complet sur le point de droit central de ce dossier avec jurisprudence applicable.">Mémorandum juridique</button>
+        </div>
+
+        <div id="input-area">
+          <textarea id="user-input" rows="2"
+            placeholder="Posez une question, demandez la rédaction d'un acte, ou donnez une instruction…"
+            aria-label="Message"></textarea>
+          <button id="send-btn" class="btn btn--primary" aria-label="Envoyer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Module 2 : Bibliothèque ── -->
+  <div id="panel-bibliotheque" style="display:none; height:100%; overflow:hidden;"></div>
+
+</div>
+
+<div id="toast-container"></div>
+<script type="module" src="/dist/main.js"></script>
+</body>
+</html>

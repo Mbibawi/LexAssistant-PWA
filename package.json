@@ -1,0 +1,19 @@
+{
+  "name": "lex-assistant",
+  "version": "1.0.0",
+  "description": "Gestionnaire de dossiers juridiques — Claude API",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && node scripts/postbuild.js",
+    "watch": "tsc --watch",
+    "serve": "node scripts/serve.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "-": "^0.0.1",
+    "docx": "^9.5.0",
+    "g": "^2.0.1"
+  }
+}
