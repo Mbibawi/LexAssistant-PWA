@@ -22,7 +22,7 @@ export function isSupported(name) {
 }
 export function guessKind(name) {
     const l = name.toLowerCase();
-    if (/jurisp|arrêt|arret|décision|cass|conseil.d.état/.test(l))
+    if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l))
         return 'jurisprudence';
     if (/doctrine|article|revue|doctr/.test(l))
         return 'doctrine';
@@ -45,15 +45,6 @@ export function makeLibDocMeta(file) {
         addedAt: Date.now(),
         tags: [],
     };
-}
-export function toBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let bin = '';
-    const chunk = 8192;
-    for (let i = 0; i < bytes.byteLength; i += chunk) {
-        bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-    }
-    return btoa(bin);
 }
 export function formatSize(bytes) {
     if (bytes < 1024)

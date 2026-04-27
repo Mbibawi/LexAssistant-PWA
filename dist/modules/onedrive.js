@@ -2,10 +2,11 @@
  * onedrive.ts — Microsoft Graph API, path-based, class hierarchy.
  *
  * class Configuration  — localStorage config read/write
- * class oneDrive       — MSAL auth + raw Graph fetch
- * class Folders        — base folder/file/JSON ops (extends oneDrive)
- * class Cases          — dossiers scenario (extends Folders)
- * class Library        — bibliothèque scenario (extends Cases)
+ * class OneDriveAuth   — MSAL auth + raw Graph/proxy fetch
+ * class Folders        — base folder/file/JSON ops (extends OneDriveAuth)
+ * class Scenario       — shared logic: skills, UI helpers, OD connection
+ * class Cases          — dossiers scenario (extends Scenario)
+ * class Library        — bibliothèque scenario (extends Scenario)
  *
  * OneDrive structure:
  *   <root>/
@@ -14,33 +15,34 @@
  *       _meta.json                   ← CaseMeta
  *       _notes.json                  ← PermanentNote[]
  *       _conversation.json           ← ChatMessage[]
+ *       _kb_YYYY-MM-DD_HHmm.md      ← versioned knowledge bases
  *       <file>
  *     Bibliotheque/<Domain>/
  *       _meta.json                   ← LibDomainMeta
  *       _conversation.json           ← LibConversationMessage[]
+ *       _kb_YYYY-MM-DD_HHmm.md      ← versioned knowledge bases
  *       <file>
  *     Bibliotheque/_conversation.json ← "all" domain conversation
  */
-import { oneDrive } from "../main.js";
-import { byID, toast, spinnerEl, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from "./ui.js";
+import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
+import { isSupported, mimeLabel, mimeIcon, formatSize, makeCaseDocMeta, makeLibDocMeta, guessKind, kindLabel } from './ingest.js';
+import { oneDrive, ids } from '../main.js';
 import { renderMarkdown } from './markdown.js';
-import { callClaudeLib, callClaudeCase, getStoredKey, setStoredKey, clearStoredKey } from './api.js';
-import { isSupported, mimeLabel, mimeIcon, formatSize, makeLibDocMeta, guessKind, kindLabel } from './ingest.js';
-import { downloadBlob, generateDocx } from './docxgen.js';
+import { ClaudeAPI } from './api.js';
+import { generateDocx } from './docxgen.js';
 // ─── Constants ────────────────────────────────────────────────────────────────
 const LS_CONFIG = 'lex_onedrive_config';
-const MSAL_CDN = "https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.8.0/lib/msal-browser.min.js";
-const GRAPH = "https://graph.microsoft.com/v1.0/me/drive/root:/";
+const MSAL_CDN = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.8.0/lib/msal-browser.min.js';
+const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
 const APP_ROOT = "Legal/Mon Cabinet d'Avocat/_LexAssistant";
-const FOLDER_LIBRARY = "Bibliotheque";
-const FOLDER_CASES = "Affaires";
-const FOLDER_SKILLS = "_Skills";
-const APP_CONFIG_FILE = "_config.json";
+const FOLDER_SKILLS = '_Skills';
+const APP_CONFIG_FILE = '_config.json';
+const CLAUDE = new ClaudeAPI();
 // ─── Configuration ────────────────────────────────────────────────────────────
 class Configuration {
     config;
     constructor() {
-        this.config = this.getConfig() || this.initateConfig();
+        this.config = this.getConfig() || this.initiateConfig();
     }
     getConfig() {
         const raw = localStorage.getItem(LS_CONFIG);
@@ -54,39 +56,32 @@ class Configuration {
     setConfig(cfg) {
         localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
     }
-    initateConfig() {
+    initiateConfig() {
         const config = {
-            clientId: prompt("Provide the OneDrive Client ID") || "",
-            tenantId: prompt("Provide the OneDrive tenant ID") || "",
+            clientId: prompt('Provide the OneDrive Client ID') || '',
+            tenantId: prompt('Provide the OneDrive tenant ID') || '',
             rootFolder: APP_ROOT,
         };
         this.setConfig(config);
         return config;
     }
-    clearConfig() {
-        localStorage.removeItem(LS_CONFIG);
-    }
-    isConfigured() {
-        return Boolean(this.config?.clientId && this.config?.rootFolder);
-    }
-    root() {
-        return this.config?.rootFolder ?? APP_ROOT;
-    }
+    clearConfig() { localStorage.removeItem(LS_CONFIG); }
+    isConfigured() { return Boolean(this.config?.clientId && this.config?.rootFolder); }
+    root() { return this.config?.rootFolder ?? APP_ROOT; }
 }
-// ─── oneDrive — MSAL auth + raw Graph fetch ───────────────────────────────────
+// ─── OneDriveAuth — MSAL auth + raw Graph/proxy fetch ────────────────────────
 export class OneDriveAuth {
-    config = new Configuration();
-    _scopes = ["Files.ReadWrite", "User.Read"];
+    cfg = new Configuration();
+    _scopes = ['Files.ReadWrite', 'User.Read'];
     _msal = null;
     _loading = null;
     account = null;
-    userName = null;
-    get isConfigured() {
-        return this.config.isConfigured();
-    }
-    setConfig(cfg) {
-        this.config.setConfig(cfg);
-    }
+    user = null;
+    token = null;
+    get config() { return this.cfg.config; }
+    get isConfigured() { return this.cfg.isConfigured(); }
+    get root() { return this.cfg.root(); }
+    setConfig(cfg) { this.cfg.setConfig(cfg); }
     getMsal() {
         if (this._msal)
             return Promise.resolve(this._msal);
@@ -94,19 +89,15 @@ export class OneDriveAuth {
             return this._loading;
         this._loading = new Promise((res, rej) => {
             const init = async () => {
-                const cfg = this.config.config;
-                if (!cfg)
-                    throw new Error("OneDrive non configuré");
+                if (!this.config)
+                    throw new Error('OneDrive non configuré');
                 const app = new msal.PublicClientApplication({
                     auth: {
-                        clientId: cfg.clientId,
-                        authority: `https://login.microsoftonline.com/${cfg.tenantId ?? "common"}`,
+                        clientId: this.config.clientId,
+                        authority: `https://login.microsoftonline.com/${this.config.tenantId ?? 'common'}`,
                         redirectUri: window.location.origin,
                     },
-                    cache: {
-                        cacheLocation: "localStorage",
-                        storeAuthStateInCookie: false,
-                    },
+                    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
                 });
                 await app.handleRedirectPromise().catch(() => null);
                 this._msal = app;
@@ -116,10 +107,10 @@ export class OneDriveAuth {
                 init().then(res).catch(rej);
                 return;
             }
-            const s = document.createElement("script");
+            const s = document.createElement('script');
             s.src = MSAL_CDN;
             s.onload = () => init().then(res).catch(rej);
-            s.onerror = () => rej(new Error("Impossible de charger MSAL"));
+            s.onerror = () => rej(new Error('Impossible de charger MSAL'));
             document.head.appendChild(s);
         });
         return this._loading;
@@ -133,25 +124,22 @@ export class OneDriveAuth {
         }
         if (this.account) {
             try {
-                return (await msal.acquireTokenSilent({
-                    scopes: this._scopes,
-                    account: this.account,
-                })).accessToken;
+                this.token = (await msal.acquireTokenSilent({ scopes: this._scopes, account: this.account })).accessToken;
+                return this.token;
             }
-            catch {
-                /* fall through to popup */
-            }
+            catch { /* fall through to popup */ }
         }
         const r = await msal.loginPopup({ scopes: this._scopes });
         this.account = msal.getAllAccounts()[0] ?? null;
-        return r.accessToken;
+        this.token = r.accessToken;
+        return this.token;
     }
     async signIn() {
         const msal = await this.getMsal();
         await msal.loginPopup({ scopes: this._scopes });
         this.account = msal.getAllAccounts()[0] ?? null;
         if (this.account)
-            this.userName = this.getSignedInUser();
+            this.user = this.getSignedInUser();
     }
     async signOut() {
         this.account = null;
@@ -176,32 +164,24 @@ export class OneDriveAuth {
     getSignedInUser() {
         return this.account?.name ?? this.account?.username ?? null;
     }
-}
-// ─── Folders — base file/folder/JSON operations ───────────────────────────────
-class Folders {
-    get _rootFolder() {
-        return oneDrive.config.root();
-    }
-    _token = null;
-    // Encode a path for Graph: "a/b/c" → "/me/drive/root:/a/b/c:"
-    encode(odPath) {
-        const encoded = odPath
-            .split("/")
-            .map((seg) => encodeURIComponent(seg))
-            .join("/");
-        return `${encoded}:`;
-    }
+    /**
+     * Universal fetch for both Graph API and external URLs (GCF proxy).
+     * - If url starts with 'https://' it is used verbatim (external call).
+     * - Otherwise it is appended to the Graph base URL.
+     * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
+     */
     async gFetch(path, opts = {}, rawBody = false) {
-        if (!this._token)
-            this._token = await oneDrive.getAccessToken();
-        const headers = opts.headers ?? {
-            Authorization: `Bearer ${this._token}`,
+        if (path !== ClaudeAPI.PROXY && !this.token)
+            await this.getAccessToken();
+        const url = path === ClaudeAPI.PROXY ? path : `${GRAPH}${path}`;
+        const headers = {
+            Authorization: `Bearer ${this.token}`,
+            ...(opts.headers ?? {}),
         };
-        if (!rawBody && opts.body && typeof opts.body === "string") {
-            headers["Content-Type"] =
-                "application/json";
+        if (!rawBody && opts.body && typeof opts.body === 'string') {
+            headers['Content-Type'] = 'application/json';
         }
-        const resp = await fetch(`${GRAPH}${path}`, { ...opts, headers });
+        const resp = await fetch(url, { ...opts, headers });
         if (!resp.ok) {
             let msg = resp.statusText;
             try {
@@ -209,9 +189,23 @@ class Folders {
                 msg = e.error?.message ?? msg;
             }
             catch { }
-            throw new Error(`Graph ${resp.status}: ${msg}`);
+            throw new Error(`Fetch ${resp.status}: ${msg}`);
         }
         return resp;
+    }
+    encode(odPath) {
+        return odPath.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+    }
+}
+// ─── Folders — base file/folder/JSON operations ───────────────────────────────
+class Folders extends OneDriveAuth {
+    get appConfigPath() {
+        return `${this.root}/${APP_CONFIG_FILE}`;
+    }
+    mainFolder = null;
+    constructor(mainFolder) {
+        super();
+        this.mainFolder = mainFolder;
     }
     async ensureFolder(folderPath) {
         try {
@@ -219,85 +213,40 @@ class Folders {
             return;
         }
         catch { }
-        const parts = folderPath.split("/");
+        const parts = folderPath.split('/');
         const name = parts.pop();
-        const parentPath = parts.join("/");
-        const parentEndpoint = parentPath
-            ? `${this.encode(parentPath)}/children`
-            : `children`;
+        const parentPath = parts.join('/');
+        const parentEndpoint = parentPath ? `${this.encode(parentPath)}/children` : 'children';
         await this.gFetch(parentEndpoint, {
-            method: "POST",
-            body: JSON.stringify({
-                name,
-                folder: {},
-                "@microsoft.graph.conflictBehavior": "rename",
-            }),
+            method: 'POST',
+            body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
         });
     }
-    async listFolder(folderPath) {
+    async listAllFolderItems(folderPath) {
         const resp = await this.gFetch(`${this.encode(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
         const data = (await resp.json());
         return data.value ?? [];
     }
-    async readFilePath(filePath) {
-        const resp = await this.gFetch(`${this.encode(filePath)}/content, `);
-        if (!resp.ok)
-            throw new Error(`Read ${filePath}: ${resp.status}`);
-        return resp.arrayBuffer();
-    }
-    async writeJson(filePath, data) {
-        await this.writeFilePath(filePath, JSON.stringify(data, null, 2), "application/json");
-    }
-    async writeFileLarge(filePath, data, mimeType) {
-        if (data.byteLength <= 4 * 1024 * 1024) {
-            await this.writeFilePath(filePath, data, mimeType);
-            return;
+    /**
+     * Lists immediate subfolders of a path relative to root.
+     * Used by both Cases (list dossiers) and Library (list domains).
+     */
+    async listSubFolders(parentRelPath) {
+        try {
+            const items = await this.listAllFolderItems(`${this.root}/${parentRelPath}`);
+            return items.filter((f) => f.folder).map((i) => i.name);
         }
-        const sessResp = await this.gFetch(`${this.encode(filePath)}/createUploadSession`, {
-            method: "POST",
-            body: JSON.stringify({
-                item: { "@microsoft.graph.conflictBehavior": "replace" },
-            }),
-        });
-        const { uploadUrl } = (await sessResp.json());
-        const chunk = 10 * 1024 * 1024;
-        for (let off = 0; off < data.byteLength; off += chunk) {
-            const end = Math.min(off + chunk, data.byteLength);
-            const r = await fetch(uploadUrl, {
-                method: "PUT",
-                headers: {
-                    "Content-Range": `bytes ${off}-${end - 1}/${data.byteLength}`,
-                },
-                body: data.slice(off, end),
-            });
-            if (!r.ok && r.status !== 202)
-                throw new Error(`Chunk upload failed at ${off}`);
+        catch {
+            return [];
         }
     }
-    async writeFilePath(filePath, data, mimeType) {
-        if (!this._token)
-            this._token = await oneDrive.getAccessToken();
-        const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
-        const resp = await this.gFetch(`${this.encode(filePath)}/content`, {
-            method: "PUT",
-            headers: {
-                Authorization: `Bearer ${this._token}`,
-                "Content-Type": mimeType,
-            },
-            body,
-        });
-        if (!resp.ok) {
-            let msg = resp.statusText;
-            try {
-                const e = (await resp.json());
-                msg = e.error?.message ?? msg;
-            }
-            catch { }
-            throw new Error(`Write ${filePath}: ${msg}`);
-        }
-    }
-    async deleteFilePath(filePath) {
-        await this.gFetch(`${this.encode(filePath)}`, { method: "DELETE" });
+    /**
+     * Lists non-underscore files in a folder.
+     * Used by both Cases and Library to enumerate documents.
+     */
+    async listFiles(folderAbsPath) {
+        const items = await this.listAllFolderItems(folderAbsPath);
+        return items.filter((i) => i.file && !i.name.startsWith('_'));
     }
     async readJson(filePath) {
         try {
@@ -309,8 +258,47 @@ class Folders {
             return null;
         }
     }
-    get appConfigPath() {
-        return `${this._rootFolder}/${APP_CONFIG_FILE}`;
+    async readFilePath(filePath) {
+        const resp = await this.gFetch(`${this.encode(filePath)}:/content`);
+        if (!resp.ok)
+            throw new Error(`Read ${filePath}: ${resp.status}`);
+        return resp.arrayBuffer();
+    }
+    async writeJson(filePath, data) {
+        await this.writeFilePath(filePath, JSON.stringify(data, null, 2), 'application/json');
+    }
+    async writeFileLarge(filePath, data, mimeType) {
+        if (data.byteLength <= 4 * 1024 * 1024) {
+            await this.writeFilePath(filePath, data, mimeType);
+            return;
+        }
+        const sessResp = await this.gFetch(`${this.encode(filePath)}/createUploadSession`, {
+            method: 'POST',
+            body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
+        });
+        const { uploadUrl } = (await sessResp.json());
+        const chunk = 10 * 1024 * 1024;
+        for (let off = 0; off < data.byteLength; off += chunk) {
+            const end = Math.min(off + chunk, data.byteLength);
+            const r = await fetch(uploadUrl, {
+                method: 'PUT',
+                headers: { 'Content-Range': `bytes ${off}-${end - 1}/${data.byteLength}` },
+                body: data.slice(off, end),
+            });
+            if (!r.ok && r.status !== 202)
+                throw new Error(`Chunk upload failed at ${off}`);
+        }
+    }
+    async writeFilePath(filePath, data, mimeType) {
+        const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        await this.gFetch(`${this.encode(filePath)}/content`, {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
+            body,
+        }, true);
+    }
+    async deleteFilePath(filePath) {
+        await this.gFetch(`${this.encode(filePath)}`, { method: 'DELETE' });
     }
     async readAppConfig() {
         return this.readJson(this.appConfigPath);
@@ -318,341 +306,336 @@ class Folders {
     async writeAppConfig(cfg) {
         await this.writeJson(this.appConfigPath, cfg);
     }
-    async loadApiKey() {
-        try {
-            const cfg = await this.readAppConfig();
-            if (cfg?.apiKey)
-                setStoredKey(cfg.apiKey);
-        }
-        catch { }
-    }
     async initRootStructure() {
-        const r = this._rootFolder;
+        const r = this.root;
         await this.ensureFolder(r);
         await this.ensureFolder(`${r}/${FOLDER_SKILLS}`);
-        await this.ensureFolder(`${r}/${FOLDER_CASES}`);
-        await this.ensureFolder(`${r}/${FOLDER_LIBRARY}`);
-        for (const d of [
-            "Commercial",
-            "Fiscal",
-            "Social",
-            "Civil",
-            "Penal",
-            "Immobilier",
-            "International",
-        ]) {
-            await this.ensureFolder(`${r}/${FOLDER_LIBRARY}/${d}`);
-        }
+        await this.ensureFolder(`${r}/${this.mainFolder}`);
         const existing = await this.readAppConfig();
         if (!existing)
             await this.writeAppConfig({});
     }
 }
-// ─── Cases — dossiers scenario ────────────────────────────────────────────────
-class Scenario extends Folders {
-    config = oneDrive.config.config;
-    activeMode = "analyse";
-    mainFolder = FOLDER_CASES;
+// ─── Scenario — shared: skills, OD status, UI helpers ────────────────────────
+class Common extends Folders {
+    claude = CLAUDE;
+    //readonly config  = oneDrive.config;
+    activeMode = 'analyse';
     skills = [];
-    // ─── Path helpers ─────────────────────────────────────────────────────────────
-    userName = () => oneDrive.userName;
-    // ─── Skills ───────────────────────────────────────────────────────────────────
-    /** Called by main.ts after fetchSkills() to load skills into both modules */
+    userName = () => oneDrive.user;
+    // ─── Skills ───────────────────────────────────────────────────────────────
+    /**
+     * Fetches all .md/.txt files from the _Skills folder and loads them.
+     * Called once after OneDrive connection. Used by both Cases and Library.
+     */
     async fetchSkills() {
-        const path = `${this._rootFolder}/${FOLDER_SKILLS}`;
-        let items;
+        const path = `${this.root}/${FOLDER_SKILLS}`;
         try {
-            items = await this.listFolder(path);
-            items = items.filter((item) => !item.folder);
+            const items = await this.listAllFolderItems(path);
+            const skills = [];
+            for (const item of items.filter((i) => !i.folder)) {
+                const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
+                if (!['md', 'txt'].includes(ext))
+                    continue;
+                try {
+                    const buf = await this.readFilePath(`${path}/${item.name}`);
+                    skills.push({ name: item.name, content: new TextDecoder().decode(buf) });
+                }
+                catch { }
+            }
+            this.skills = skills;
+            this.updateSkillIndicator();
+            return skills;
         }
         catch {
             return [];
         }
-        const skills = [];
-        for (const item of items) {
-            const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
-            if (!["md", "txt"].includes(ext))
-                continue;
-            try {
-                const buf = await this.readFilePath(`${path}/${item.name}`);
-                skills.push({
-                    name: item.name,
-                    content: new TextDecoder().decode(buf),
-                });
-            }
-            catch { }
-        }
-        this.skills = skills;
-        this.updateSkillIndicator();
-        return skills;
     }
-    // ─── OneDrive connection ──────────────────────────────────────────────────────
+    // ─── OneDrive connection ──────────────────────────────────────────────────
     updateODStatus() {
-        const statusEl = byID("onedrive-status");
+        const statusEl = byID(ids.oneDriveStatus);
         if (!statusEl)
             return;
-        if (oneDrive.userName) {
-            statusEl.textContent = `☁ ${oneDrive.userName}`;
-            statusEl.className = "od-status od-status--connected";
+        if (oneDrive.user) {
+            statusEl.textContent = `☁ ${oneDrive.user}`;
+            statusEl.className = 'od-status od-status--connected';
         }
         else {
-            statusEl.textContent = oneDrive.isConfigured
-                ? "☁ Non connecté"
-                : "☁ Non configuré";
-            statusEl.className = "od-status od-status--disconnected";
+            statusEl.textContent = oneDrive.isConfigured ? '☁ Non connecté' : '☁ Non configuré';
+            statusEl.className = 'od-status od-status--disconnected';
         }
     }
-    async connectOneDrive(loadSubfolders) {
+    /**
+     *
+     * @param msg
+     * @returns void
+     */
+    appendMsg(msg) {
+        const area = byID(ids.chatArea);
+        if (!area)
+            return;
+        area.querySelector('.empty-state')?.remove();
+        area.appendChild(msg);
+        area.scrollTop = area.scrollHeight;
+    }
+    async connectOneDrive(afterConnect) {
         try {
             await oneDrive.signIn();
-            oneDrive.userName = oneDrive.getSignedInUser();
+            oneDrive.user = oneDrive.getSignedInUser();
             this.updateODStatus();
             await this.initRootStructure();
-            await this.loadApiKey();
-            if (loadSubfolders)
-                await loadSubfolders();
+            if (afterConnect)
+                await afterConnect();
             await this.fetchSkills();
-            toast(`Connecté : ${oneDrive.userName}`, "success");
+            toast(`Connecté : ${oneDrive.user}`, 'success');
         }
         catch (err) {
-            toast("Erreur connexion OneDrive : " + err.message, "error");
+            toast('Erreur connexion OneDrive : ' + err.message, 'error');
         }
     }
-    // ─── Skill indicator ──────────────────────────────────────────────────────────
-    updateSkillIndicator() {
-        const badge = byID("skills-badge");
-        const n = this.skills.length;
-        if (!badge)
+    /**
+     *
+     * @returns
+     */
+    setupInputArea() {
+        const ta = byID(ids.userInput);
+        const sendBtn = byID(ids.sendBtn);
+        if (!ta || !sendBtn)
             return;
-        badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";
-        toggle(badge, n > 0);
+        ta.addEventListener('input', () => this.autoResize(ta));
+        ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            this.sendMessage(ta, sendBtn);
+        } });
+        sendBtn.onclick = () => this.sendMessage(ta, sendBtn);
+        this.updateQuickPrompts(ta);
     }
+    // ─── Settings modal (OneDrive only — no API key) ──────────────────────────
     openSettingsModal() {
-        byID("settings-overlay")?.remove();
-        const overlay = el("div", {
-            className: "modal-overlay",
-            id: "settings-overlay",
-        });
-        const dialog = el("div", {
-            className: "modal-dialog modal-dialog--settings",
-        });
+        byID(ids.settingsOverlay)?.remove();
+        const overlay = el('div', { className: 'modal-overlay', id: ids.settingsOverlay });
+        const dialog = el('div', { className: 'modal-dialog modal-dialog--settings' });
         dialog.innerHTML = `
       <h2 class="modal-title">⚙ Paramètres</h2>
-      <h3 class="settings-section-title">Clé API Claude (Anthropic)</h3>
-      <p class="settings-hint">Stockée dans <code>_config.json</code> sur OneDrive. Transmise uniquement à api.anthropic.com.</p>
-      <input class="form-input" id="s-api" type="password" placeholder="sk-ant-api03-…" value="${getStoredKey()}" autocomplete="off"/>
-      <div style="display:flex;gap:8px;margin-top:6px">
-        <button class="btn btn--primary btn--sm" id="s-api-save">Enregistrer</button>
-        <button class="btn btn--secondary btn--sm" id="s-api-clear">Effacer</button>
-      </div>
-      <hr style="margin:20px 0">
       <h3 class="settings-section-title">☁ Microsoft OneDrive (Graph API)</h3>
       <p class="settings-hint"><strong>portal.azure.com</strong> → App registrations → New registration<br>
       Type : SPA — Redirect URI : <code>${window.location.origin}</code><br>
       Permissions : <code>Files.ReadWrite</code> + <code>User.Read</code></p>
       <label class="form-label">Application (Client) ID <span class="required">*</span></label>
-      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${this.config?.clientId ?? ""}"/>
+      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${this.config?.clientId ?? ''}"/>
       <label class="form-label">Tenant ID</label>
-      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${this.config?.tenantId ?? "common"}"/>
+      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${this.config?.tenantId ?? 'common'}"/>
       <label class="form-label">Dossier racine OneDrive</label>
-      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${this.config?.rootFolder ?? "LexAssistant"}"/>
+      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${this.config?.rootFolder ?? 'LexAssistant'}"/>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn btn--primary btn--sm" id="s-od-save">Enregistrer</button>
+        <button class="btn btn--primary btn--sm" id="s-od-save">Enregistrer</button>
         <button class="btn btn--secondary btn--sm" id="s-od-init">Initialiser structure OneDrive</button>
         <button class="btn btn--secondary btn--sm" id="s-od-signout">Déconnecter</button>
       </div>
-      ${oneDrive.userName ? `<p class="od-connected-label">✓ Connecté : ${oneDrive.userName}</p>` : ""}
+      ${oneDrive.user ? `<p class="od-connected-label">✓ Connecté : ${oneDrive.user}</p>` : ''}
       <div class="modal-btns" style="margin-top:24px">
         <button class="btn btn--secondary" id="s-close">Fermer</button>
       </div>`;
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay)
-                overlay.remove();
-        });
-        qs("#s-close", dialog).onclick = () => overlay.remove();
-        qs("#s-api-save", dialog).onclick = async () => {
-            const v = qs("#s-api", dialog).value.trim();
-            if (!v) {
-                toast("Clé vide.", "error");
-                return;
-            }
-            setStoredKey(v);
-            if (oneDrive.userName) {
-                try {
-                    const existing = (await this.readAppConfig()) ?? {};
-                    await this.writeAppConfig({ ...existing, apiKey: v });
-                    toast("Clé API enregistrée sur OneDrive.", "success");
-                }
-                catch {
-                    toast("Clé mémorisée mais non sauvegardée sur OneDrive (erreur).", "error");
-                }
-            }
-            else {
-                toast("Clé mémorisée pour cette session. Connectez OneDrive pour la sauvegarder définitivement.", "info");
-            }
-        };
-        qs("#s-api-clear", dialog).onclick = async () => {
-            clearStoredKey();
-            qs("#s-api", dialog).value = "";
-            if (oneDrive.userName) {
-                try {
-                    const existing = (await this.readAppConfig()) ?? {};
-                    await this.writeAppConfig({ ...existing, apiKey: "" });
-                }
-                catch { }
-            }
-            toast("Clé effacée.", "info");
-        };
-        qs("#s-od-save", dialog).onclick = () => {
-            const clientId = qs("#s-client", dialog).value.trim();
-            const tenantId = qs("#s-tenant", dialog).value.trim() || "common";
-            const rootFolder = qs("#s-root", dialog).value.trim() || "LexAssistant";
+        overlay.addEventListener('click', (e) => { if (e.target === overlay)
+            overlay.remove(); });
+        qs('#s-close', dialog).onclick = () => overlay.remove();
+        qs('#s-od-save', dialog).onclick = () => {
+            const clientId = qs('#s-client', dialog).value.trim();
+            const tenantId = qs('#s-tenant', dialog).value.trim() || 'common';
+            const rootFolder = qs('#s-root', dialog).value.trim() || 'LexAssistant';
             if (!clientId) {
-                toast("Client ID requis.", "error");
+                toast('Client ID requis.', 'error');
                 return;
             }
             oneDrive.setConfig({ clientId, tenantId, rootFolder });
-            toast("Configuration OneDrive enregistrée.", "success");
+            toast('Configuration OneDrive enregistrée.', 'success');
         };
-        qs("#s-od-init", dialog).onclick = async () => {
+        qs('#s-od-init', dialog).onclick = async () => {
             if (!oneDrive.isConfigured) {
-                toast("Sauvegardez la configuration d'abord.", "error");
+                toast('Sauvegardez la configuration d\'abord.', 'error');
                 return;
             }
             try {
-                if (!oneDrive.userName) {
+                if (!oneDrive.user) {
                     await oneDrive.signIn();
-                    oneDrive.userName = oneDrive.getSignedInUser();
+                    oneDrive.user = oneDrive.getSignedInUser();
                     this.updateODStatus();
                 }
                 await this.initRootStructure();
-                toast("Structure initialisée avec succès.", "success");
+                toast('Structure initialisée avec succès.', 'success');
             }
             catch (err) {
-                toast("Erreur : " + err.message, "error");
+                toast('Erreur : ' + err.message, 'error');
             }
         };
-        qs("#s-od-signout", dialog).onclick = async () => {
+        qs('#s-od-signout', dialog).onclick = async () => {
             await oneDrive.signOut();
-            oneDrive.userName = null;
+            oneDrive.user = null;
             this.updateODStatus();
-            toast("Déconnecté.", "info");
+            toast('Déconnecté.', 'info');
             overlay.remove();
         };
     }
+    // ─── Skill indicator ──────────────────────────────────────────────────────
+    updateSkillIndicator() {
+        const n = this.skills.length;
+        for (const id of [ids.skillsBadge, ids.libSkillsBadge]) {
+            const badge = byID(id);
+            if (!badge)
+                continue;
+            badge.textContent = n > 0 ? `${n} skill${n > 1 ? 's' : ''}` : '';
+            toggle(badge, n > 0);
+        }
+        const top = byID(ids.libSkillsTop);
+        if (top)
+            top.textContent = n > 0 ? `${n} skill${n > 1 ? 's' : ''} actif${n > 1 ? 's' : ''}` : '';
+    }
+    // ─── Shared UI helpers ────────────────────────────────────────────────────
     onClick(btn, action) {
-        if (!btn)
-            return;
-        btn.onclick = () => action();
+        if (btn)
+            btn.onclick = action;
     }
     autoResize(ta) {
-        ta.style.height = "auto";
-        ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
     }
-    showEmptyState() {
-        const area = byID("chat-area");
-        if (!area)
-            return;
-        area.innerHTML = "";
-        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "⚖️" }), el("h2", { textContent: "Bienvenue dans Lex Assistant" }), el("p", {
-            textContent: "Connectez OneDrive et créez votre premier dossier.",
-        }), (() => {
-            const b = el("button", {
-                className: "btn btn--primary",
-                textContent: "+ Nouveau dossier",
-            });
-            b.onclick = () => this.openCaseFormModal(null);
-            return b;
-        })()));
+    sanitiseFolder(name) {
+        return name.replace(/[/\\:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 60);
     }
     showNotConnected() {
-        const area = byID("chat-area");
+        const area = byID(ids.chatArea);
         if (!area)
             return;
-        area.innerHTML = "";
-        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "☁" }), el("h2", { textContent: "OneDrive non connecté" }), el("p", {
-            textContent: "Configurez votre App Registration Azure et connectez-vous.",
-        }), (() => {
-            const b = el("button", {
-                className: "btn btn--primary",
-                textContent: "☁ Configurer OneDrive",
-            });
+        area.innerHTML = '';
+        area.appendChild(el('div', { className: 'empty-state' }, el('div', { className: 'empty-icon', textContent: '☁' }), el('h2', { textContent: 'OneDrive non connecté' }), el('p', { textContent: 'Configurez votre App Registration Azure et connectez-vous.' }), (() => {
+            const b = el('button', { className: 'btn btn--primary', textContent: '☁ Configurer OneDrive' });
             b.onclick = () => this.openSettingsModal();
             return b;
         })()));
     }
-    sanitiseFolder(name) {
-        return name
-            .replace(/[/\\:*?"<>|]/g, "_")
-            .replace(/\s+/g, "_")
-            .slice(0, 60);
+    // ─── Shared typing indicator ──────────────────────────────────────────────
+    appendTypingTo(areaId, label) {
+        const area = byID(areaId);
+        const typing = el('div', { className: 'msg msg--assistant', id: ids.typing });
+        const bubble = el('div', { className: 'msg_bubble' });
+        bubble.append(spinner(), el('span', { textContent: ` ${label}` }));
+        typing.append(el('div', { className: 'msg_label', textContent: 'Lex Assistant' }), bubble);
+        area.appendChild(typing);
+        area.scrollTop = area.scrollHeight;
+        return typing;
     }
 }
-export class Cases extends Scenario {
-    saving = false;
+// ─── Cases — dossiers scenario ────────────────────────────────────────────────
+export class Cases extends Common {
+    _saving = false;
     _docFilter = null;
     _foldersMeta = [];
     _activeCase = null;
     _caseNotes = [];
     _caseMessages = [];
-    // ─── Path helpers ─────────────────────────────────────────────────────────────
-    casePath = (f) => `${this._rootFolder}/${FOLDER_CASES}/${f}`;
+    _caseKb = null; // cached knowledge base content
+    // ─── Path helpers ─────────────────────────────────────────────────────────
+    casePath = (f) => `${this.root}/${this.mainFolder}/${f}`;
     metaPath = (f) => `${this.casePath(f)}/_meta.json`;
     notesPath = (f) => `${this.casePath(f)}/_notes.json`;
     convPath = (f) => `${this.casePath(f)}/_conversation.json`;
-    // ─── CRUD ─────────────────────────────────────────────────────────────────────
-    async readCaseMeta(folderName) {
-        return this.readJson(this.metaPath(folderName));
-    }
-    async writeCaseMeta(subFolderName, meta) {
-        await this.ensureFolder(this.casePath(subFolderName));
-        await this.writeJson(this.metaPath(subFolderName), meta);
-    }
-    async readNotes(folderName) {
-        const f = await this.readJson(this.notesPath(folderName));
-        return f?.notes ?? [];
-    }
-    async writeNotes(folderName, notes) {
-        await this.writeJson(this.notesPath(folderName), {
-            notes,
-        });
-    }
-    async readConversation(folderName) {
-        const f = await this.readJson(this.convPath(folderName));
-        return f?.messages ?? [];
-    }
-    async writeConversation(folderName, messages) {
-        await this.writeJson(this.convPath(folderName), {
-            messages,
-        });
-    }
-    async listSubFolders() {
-        try {
-            const items = await this.listFolder(`${this._rootFolder}/${this.mainFolder}`);
-            return items.filter((i) => i.folder).map((i) => i.name);
+    // ─── Show UI ──────────────────────────────────────────────────────────────
+    async showUI() {
+        this.buildUI();
+        // Wire all scenario-specific UI
+        this._caseMessages;
+        if (this.userName()) {
+            this.updateODStatus();
+            this.setupInputArea();
+            this.setupBarsBtns();
+            this.renderChat();
+            this.renderDocList();
+            this.updateSkillIndicator();
+            await this.loadAllSubFolders();
+            await this.fetchSkills();
         }
-        catch {
-            return [];
+        else {
+            this.showNotConnected();
         }
     }
-    async listCaseFiles(folderName) {
-        const items = await this.listFolder(this.casePath(folderName));
-        return items.filter((i) => i.file && !i.name.startsWith("_"));
+    buildUI() {
+        const content = byID(ids.content);
+        content.innerHTML = '';
+        content.className = 'dossiers-view';
+        const main = el('div', { id: ids.mainLayout });
+        content.appendChild(main);
+        const aside = el('aside', { id: ids.sidebar });
+        const wSpace = el('div', { id: ids.workspace });
+        main.append(aside, wSpace);
+        // Sidebar
+        aside.append(el('div', { className: 'sidebar_section-title', innerText: 'Dossiers' }), el('div', { id: ids.caseList }), el('button', { id: ids.btnNewSidebar, className: 'btn btn--ghost btn--dashed', innerText: '+ Nouveau dossier' }), el('div', { className: 'sidebar_divider' }), el('div', { className: 'sidebar_section-title', innerHTML: "Pièces <span id='doc-count' class='doc-count'>0 pièces</span>" }));
+        const filterTabs = el('div', { className: 'doc-filter-tabs' });
+        const types = {
+            all: 'Tout',
+            piece: 'Pièces',
+            jurisprudence: 'Jurisprudence',
+            doctrine: 'Doctrine',
+            redige: 'Rédigés'
+        };
+        filterTabs.append(...['all', 'piece', 'jurisprudence', 'doctrine', 'redige'].map((f) => el('button', {
+            className: `doc-filter-tab${f === 'all' ? ' active' : ''}`, 'data-filter': f,
+            innerText: types[f]
+        })));
+        const fileInput = el('input', {
+            type: 'file', id: ids.fileInput, multiple: true,
+            accept: '.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md,.rtf', style: { display: 'none' }
+        });
+        const upload = el('div', { className: 'sidebar_upload-row' });
+        upload.append(fileInput, el('button', { id: ids.btnUpload, className: 'btn btn--ghost btn--sm', innerText: '⬆ Upload' }), el('button', { id: ids.btnOdSync, className: 'btn btn--ghost btn--sm', innerText: '☁ Sync' }), el('button', { id: ids.btnNotesOpen, className: 'btn btn--ghost btn--sm', innerText: '📌 Notes' }));
+        aside.append(filterTabs, el('div', { id: ids.docList, className: 'doc-list' }), upload);
+        // Workspace
+        const mode = el('div', { id: ids.modeBar });
+        const inputArea = el('div', { id: ids.inputArea });
+        const prompts = el('div', { id: ids.quickPrompts });
+        wSpace.append(mode, el('div', { id: ids.noteBar, className: 'note-bar', style: { display: 'none' } }), el('div', { id: ids.chatArea, className: 'chat-area', role: 'log', 'aria-live': 'polite' }), prompts, inputArea);
+        mode.append(el('span', { className: 'mode-bar_label', innerText: 'Mode :' }), ...['analyse', 'redaction', 'modification', 'note'].map((m, i) => el('button', {
+            className: `mode-btn${i === 0 ? ' active' : ''}`, 'data-mode': m,
+            innerText: ({ analyse: 'Analyse', redaction: 'Rédaction', modification: 'Modification', note: 'Note permanente' })[m]
+        })), el('div', { className: 'mode-bar_spacer' }), el('button', { id: ids.btnCaseSummary, className: 'btn btn--ghost btn--sm', innerText: 'Point dossier ↗' }), el('button', { id: ids.btnBuildKb, className: 'btn btn--ghost btn--sm', innerText: '🧠 Base de connaissance' }));
+        prompts.append(...[
+            ['Risques du dossier', 'Analyse les risques juridiques et fiscaux du dossier et liste les points d\'attention prioritaires.'],
+            ['Mise en demeure', 'Rédige une mise en demeure formelle à la partie adverse sur la base des pièces du dossier.'],
+            ['Chronologie des faits', 'Fais une synthèse chronologique des faits pertinents issus des pièces du dossier.'],
+            ['Analyse chiffrée', 'Analyse les données chiffrées des tableaux Excel et leurs implications juridiques et fiscales.'],
+            ['Mémorandum juridique', 'Rédige un mémorandum juridique complet sur le point de droit central avec jurisprudence applicable.'],
+        ].map(([label, prompt]) => el('button', { className: 'quick-btn', 'data-prompt': prompt, innerText: label })));
+        inputArea.append(el('textarea', {
+            id: ids.userInput, rows: 2,
+            placeholder: 'Posez une question, demandez la rédaction d\'un acte, ou donnez une instruction…', 'aria-label': 'Message'
+        }), el('button', {
+            id: ids.sendBtn, className: 'btn btn--primary', 'aria-label': 'Envoyer',
+            innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
+        }));
+    }
+    // ─── OneDrive CRUD ────────────────────────────────────────────────────────
+    readCaseMeta(f) { return this.readJson(this.metaPath(f)); }
+    async writeCaseMeta(f, m) {
+        await this.ensureFolder(this.casePath(f));
+        await this.writeJson(this.metaPath(f), m);
+    }
+    async readNotes(f) { return (await this.readJson(this.notesPath(f)))?.notes ?? []; }
+    writeNotes(f, n) { return this.writeJson(this.notesPath(f), { notes: n }); }
+    async readConversation(f) { return (await this.readJson(this.convPath(f)))?.messages ?? []; }
+    writeConversation(f, m) { return this.writeJson(this.convPath(f), { messages: m }); }
+    readCaseFile(folderName, fileName) {
+        return this.readFilePath(`${this.casePath(folderName)}/${fileName}`);
     }
     async writeCaseFile(folderName, fileName, data, mimeType) {
         await this.ensureFolder(this.casePath(folderName));
         await this.writeFileLarge(`${this.casePath(folderName)}/${fileName}`, data, mimeType);
     }
-    async readCaseFile(folderName, fileName) {
-        return this.readFilePath(`${this.casePath(folderName)}/${fileName}`);
-    }
-    // ─── Persist helpers ──────────────────────────────────────────────────────────
+    // ─── Persist helpers ──────────────────────────────────────────────────────
     async saveMeta() {
-        if (!this._activeCase || this.saving)
+        if (!this._activeCase || this._saving)
             return;
-        this.saving = true;
+        this._saving = true;
         const meta = {
             name: this._activeCase.name,
             folderName: this._activeCase.folderName,
@@ -667,53 +650,14 @@ export class Cases extends Scenario {
             await this.writeCaseMeta(this._activeCase.folderName, meta);
         }
         finally {
-            this.saving = false;
+            this._saving = false;
         }
     }
-    async saveNotes() {
-        if (!this._activeCase)
-            return;
-        await this.writeNotes(this._activeCase.folderName, this._caseNotes);
-    }
-    async saveConversation() {
-        if (!this._activeCase)
-            return;
-        await this.writeConversation(this._activeCase.folderName, this._caseMessages);
-    }
-    // ─── Skills ───────────────────────────────────────────────────────────────────
-    /** Called by main.ts after fetchSkills() to load skills into both modules */
-    async fetchSkills() {
-        const path = `${this._rootFolder}/${FOLDER_SKILLS}`;
-        let items;
-        try {
-            items = await this.listFolder(path);
-            items = items.filter((item) => !item.folder);
-        }
-        catch {
-            return [];
-        }
-        const skills = [];
-        for (const item of items) {
-            const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
-            if (!["md", "txt"].includes(ext))
-                continue;
-            try {
-                const buf = await this.readFilePath(`${path}/${item.name}`);
-                skills.push({
-                    name: item.name,
-                    content: new TextDecoder().decode(buf),
-                });
-            }
-            catch { }
-        }
-        this.skills = skills;
-        this.updateSkillIndicator();
-        return skills;
-    }
-    // ─── Load all cases ───────────────────────────────────────────────────────────
+    saveNotes() { return this._activeCase ? this.writeNotes(this._activeCase.folderName, this._caseNotes) : Promise.resolve(); }
+    saveConversation() { return this._activeCase ? this.writeConversation(this._activeCase.folderName, this._caseMessages) : Promise.resolve(); }
+    // ─── Load all cases ───────────────────────────────────────────────────────
     async loadAllSubFolders() {
-        await this.loadApiKey();
-        const subFolders = await this.listSubFolders();
+        const subFolders = await this.listSubFolders(this.mainFolder);
         this._foldersMeta = [];
         await Promise.all(subFolders.map(async (folderName) => {
             const meta = await this.readCaseMeta(folderName);
@@ -726,7 +670,7 @@ export class Cases extends Scenario {
                 status: meta.status,
                 createdAt: meta.createdAt,
                 updatedAt: meta.updatedAt,
-                documents: meta.documents ?? [],
+                documents: meta.documents ?? []
             });
         }));
         this._foldersMeta.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -736,17 +680,22 @@ export class Cases extends Scenario {
         else
             this.showEmptyState();
     }
-    // ─── Select case ──────────────────────────────────────────────────────────────
+    // ─── Select case ──────────────────────────────────────────────────────────
     async selectCase(folderName) {
         const c = this._foldersMeta.find((x) => x.folderName === folderName);
         if (!c)
             return;
         this._activeCase = c;
+        this._caseKb = null;
         this._caseNotes = await this.readNotes(folderName);
         this._caseMessages = await this.readConversation(folderName);
-        qsa(".case-item").forEach((el) => el.classList.toggle("active", el.dataset.folder === folderName));
-        const nameEl = byID("topbar-case-name");
-        const domainEl = byID("topbar-case-domain");
+        // Try to load the latest knowledge base silently
+        const kb = await this.claude.loadLatestCaseKb(this.casePath(folderName), this.listAllFolderItems, this.readFilePath);
+        if (kb)
+            this._caseKb = kb.content;
+        qsa('.case-item').forEach((el) => el.classList.toggle('active', el.dataset.folder === folderName));
+        const nameEl = byID(ids.topBarCaseName);
+        const domainEl = byID(ids.topBarCaseDomain);
         if (nameEl)
             nameEl.textContent = c.name;
         if (domainEl)
@@ -760,7 +709,7 @@ export class Cases extends Scenario {
         if (!this._activeCase)
             return;
         try {
-            const items = await this.listCaseFiles(this._activeCase.folderName);
+            const items = await this.listFiles(this.casePath(this._activeCase.folderName));
             let added = 0;
             for (const item of items) {
                 if (!item.file || !isSupported(item.name))
@@ -768,11 +717,9 @@ export class Cases extends Scenario {
                 if (this._activeCase.documents.some((d) => d.name === item.name))
                     continue;
                 this._activeCase.documents.push({
-                    name: item.name,
-                    kind: guessKind(item.name),
-                    mimeType: item.file.mimeType || "application/octet-stream",
-                    sizeBytes: item.size ?? 0,
-                    addedAt: Date.now(),
+                    name: item.name, kind: guessKind(item.name),
+                    mimeType: item.file.mimeType || 'application/octet-stream',
+                    sizeBytes: item.size ?? 0, addedAt: Date.now(),
                 });
                 added++;
             }
@@ -781,78 +728,74 @@ export class Cases extends Scenario {
                 this.renderDocList();
                 this.updateDocCount();
             }
-            toast(`${added} nouveau(x) document(s) indexé(s) depuis OneDrive.`, "success");
+            toast(`${added} nouveau(x) document(s) indexé(s) depuis OneDrive.`, 'success');
         }
         catch (err) {
-            toast("Erreur sync : " + err.message, "error");
+            toast('Erreur sync : ' + err.message, 'error');
         }
     }
-    // ─── Skill indicator ──────────────────────────────────────────────────────────
-    updateSkillIndicator() {
-        const badge = byID("skills-badge");
-        const n = this.skills.length;
-        if (!badge)
+    // ─── Knowledge base ───────────────────────────────────────────────────────
+    async buildKnowledgeBase(appendMode = false) {
+        if (!this._activeCase)
             return;
-        badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";
-        toggle(badge, n > 0);
+        const btn = byID(ids.btnBuildKb);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '🧠 Génération…';
+        }
+        try {
+            const markdown = await this.claude.buildCaseKnowledgeBase(this._activeCase, this.readCaseFile, [], // TODO: pass existing KB docs fingerprints from _meta if tracked
+            appendMode);
+            const filename = `_kb${this._activeCase.name}_${this.claude.kbTimestamp()}.md`;
+            const filePath = `${this.casePath(this._activeCase.folderName)}/${filename}`;
+            await this.writeFilePath(filePath, markdown, 'text/markdown');
+            this._caseKb = markdown;
+            toast('Base de connaissance générée et sauvegardée.', 'success');
+        }
+        catch (err) {
+            toast('Erreur KB : ' + err.message, 'error');
+        }
+        finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🧠 Base de connaissance';
+            }
+        }
     }
-    // ─── Render: case list ────────────────────────────────────────────────────────
+    // ─── Render: case list ────────────────────────────────────────────────────
     renderCaseList() {
-        const list = byID("case-list");
+        const list = byID(ids.caseList);
         if (!list)
             return;
-        list.innerHTML = "";
-        const labels = {
-            active: "En cours",
-            closed: "Clôturé",
-            suspended: "Suspendu",
-        };
+        list.innerHTML = '';
+        const labels = { active: 'En cours', closed: 'Clôturé', suspended: 'Suspendu' };
         for (const c of this._foldersMeta) {
-            const item = el("div", {
-                className: "case-item" +
-                    (c.folderName === this._activeCase?.folderName ? " active" : ""),
-            });
+            const item = el('div', { className: 'case-item' + (c.folderName === this._activeCase?.folderName ? ' active' : '') });
             item.dataset.folder = c.folderName;
-            item.append(el("span", { className: "case-item__name", textContent: c.name }), el("span", { className: "case-item__domain", textContent: c.domain }), el("span", {
-                className: `case-item__status case-item__status--${c.status}`,
-                textContent: labels[c.status],
-            }));
+            item.append(el('span', { className: 'case-item_name', textContent: c.name }), el('span', { className: 'case-item_domain', textContent: c.domain }), el('span', { className: `case-item_status case-item_status--${c.status}`, textContent: labels[c.status] }));
             item.onclick = () => this.selectCase(c.folderName);
-            item.addEventListener("contextmenu", (e) => {
-                e.preventDefault();
-                this.openCaseContextMenu(c, e.clientX, e.clientY);
-            });
+            item.addEventListener('contextmenu', (e) => { e.preventDefault(); this.openCaseContextMenu(c, e.clientX, e.clientY); });
             list.appendChild(item);
         }
     }
-    // ─── Render: doc list ─────────────────────────────────────────────────────────
+    // ─── Render: doc list ─────────────────────────────────────────────────────
     renderDocList() {
-        const list = byID("doc-list");
+        const list = byID(ids.docList);
         if (!list || !this._activeCase)
             return;
-        list.innerHTML = "";
+        list.innerHTML = '';
         const docs = !this._docFilter
             ? this._activeCase.documents
             : this._activeCase.documents.filter((d) => d.kind === this._docFilter);
         if (!docs.length) {
-            list.appendChild(el("div", {
-                className: "doc-empty",
-                textContent: "Aucun document. Uploadez ou synchronisez OneDrive.",
-            }));
+            list.appendChild(el('div', { className: 'doc-empty', textContent: 'Aucun document. Uploadez ou synchronisez OneDrive.' }));
             return;
         }
         for (const doc of [...docs].sort((a, b) => b.addedAt - a.addedAt)) {
-            const item = el("div", { className: "doc-item" });
-            const info = el("div", { className: "doc-info" });
-            info.append(el("div", { className: "doc-name", textContent: doc.name }), el("div", {
-                className: "doc-meta",
-                textContent: `${formatDate(doc.addedAt)} · ${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)}`,
-            }));
-            const del = el("button", {
-                className: "doc-delete",
-                textContent: "×",
-                title: "Retirer du dossier",
-            });
+            const item = el('div', { className: 'doc-item' });
+            const info = el('div', { className: 'doc-info' });
+            info.append(el('div', { className: 'doc-name', textContent: doc.name }), el('div', { className: 'doc-meta', textContent: `${formatDate(doc.addedAt)} · ${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)}` }));
+            const del = el('button', { className: 'doc-delete', textContent: '×', title: 'Retirer du dossier' });
             del.onclick = async (e) => {
                 e.stopPropagation();
                 const ok = await confirm(`Retirer "${doc.name}" ?\n(Fichier OneDrive conservé, seul l'index local est supprimé.)`);
@@ -862,60 +805,45 @@ export class Cases extends Scenario {
                 await this.saveMeta();
                 this.renderDocList();
                 this.updateDocCount();
-                toast("Document retiré de l'index.", "info");
+                toast('Document retiré de l\'index.', 'info');
             };
-            item.append(el("span", {
-                className: "doc-icon",
-                textContent: mimeIcon(doc.mimeType),
-            }), info, el("span", {
-                className: `doc-kind doc-kind--${doc.kind}`,
-                textContent: kindLabel(doc.kind),
-            }), del);
+            item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, el('span', { className: `doc-kind doc-kind--${doc.kind}`, textContent: kindLabel(doc.kind) }), del);
             list.appendChild(item);
         }
     }
     updateDocCount() {
-        const countEl = byID("doc-count");
-        if (countEl && this._activeCase) {
-            countEl.textContent = `${this._activeCase.documents.length} pièce${this._activeCase.documents.length !== 1 ? "s" : ""}`;
-        }
+        const countEl = byID(ids.docCount);
+        if (countEl && this._activeCase)
+            countEl.textContent = `${this._activeCase.documents.length} pièce${this._activeCase.documents.length !== 1 ? 's' : ''}`;
     }
-    // ─── Render: note bar ─────────────────────────────────────────────────────────
+    // ─── Render: note bar ─────────────────────────────────────────────────────
     renderNoteBar() {
-        const bar = byID("note-bar");
-        if (!bar)
-            return;
-        bar.innerHTML = "";
-        toggle(bar, this._caseNotes.length > 0);
         if (!this._caseNotes.length)
             return;
+        const bar = byID(ids.noteBar);
+        if (!bar)
+            return;
+        bar.innerHTML = '';
+        toggle(bar, this._caseNotes.length > 0);
         const n = this._caseNotes.length;
-        bar.append(el("span", { className: "note-badge", textContent: String(n) }), el("span", {
-            className: "note-bar__text",
-            textContent: `note${n > 1 ? "s" : ""} active${n > 1 ? "s" : ""} · ` +
-                this._caseNotes.map((x) => x.content.slice(0, 40) + "…").join(" — "),
-        }), (() => {
-            const b = el("button", {
-                className: "note-bar__manage",
-                textContent: "Gérer",
-            });
-            b.onclick = () => this.openNotesModal();
-            return b;
-        })());
+        bar.append(el('span', { className: 'note-badge', textContent: String(n) }), el('span', {
+            className: 'note-bar_text',
+            textContent: `note${n > 1 ? 's' : ''} active${n > 1 ? 's' : ''} · ` + this._caseNotes.map((x) => x.content.slice(0, 40) + '…').join(' — ')
+        }), (() => { const b = el('button', { className: 'note-bar_manage', textContent: 'Gérer' }); b.onclick = () => this.openNotesModal(); return b; })());
     }
-    // ─── Render: chat ─────────────────────────────────────────────────────────────
+    // ─── Render: chat ─────────────────────────────────────────────────────────
     renderChat() {
-        const area = byID("chat-area");
+        const area = byID(ids.chatArea);
         if (!area)
             return;
-        area.innerHTML = "";
+        area.innerHTML = '';
         if (!this._caseMessages.length) {
             const c = this._activeCase;
             if (!c)
                 return;
-            area.appendChild(el("div", { className: "msg msg--assistant" }, el("div", { className: "msg__label", textContent: "Lex Assistant" }), el("div", { className: "msg__bubble" }, el("p", {
-                innerHTML: `Dossier <strong>${c.name}</strong>. ${c.documents.length} pièce(s), ${this._caseNotes.length} note(s)${this.skills.length ? `, ${this.skills.length} skill(s)` : ""}.`,
-            }), el("p", { textContent: "Que souhaitez-vous faire ?" }))));
+            area.appendChild(el('div', { className: 'msg msg--assistant' }, el('div', { className: 'msg_label', textContent: 'Lex Assistant' }), el('div', { className: 'msg_bubble' }, el('p', {
+                innerHTML: `Dossier <strong>${c.name}</strong>. ${c.documents.length} pièce(s), ${this._caseNotes.length} note(s)${this.skills.length ? `, ${this.skills.length} skill(s)` : ''}${this._caseKb ? ' · <em>Base de connaissance chargée</em>' : ''}.`
+            }), el('p', { textContent: 'Que souhaitez-vous faire ?' }))));
             return;
         }
         for (const msg of this._caseMessages)
@@ -923,147 +851,77 @@ export class Cases extends Scenario {
         area.scrollTop = area.scrollHeight;
     }
     buildMsgEl(msg) {
-        const wrap = el("div", { className: `msg msg--${msg.role}` });
-        const bubble = el("div", { className: "msg__bubble" });
+        const wrap = el('div', { className: `msg msg--${msg.role}` });
+        const bubble = el('div', { className: 'msg_bubble' });
         bubble.innerHTML = renderMarkdown(msg.content);
-        wrap.append(el("div", {
-            className: "msg__label",
-            textContent: msg.role === "user" ? "Vous" : "Lex Assistant",
-        }), bubble);
-        if (msg.role === "assistant") {
-            const actions = el("div", { className: "msg__actions" });
-            const copy = el("button", {
-                className: "msg-action-btn",
-                textContent: "Copier",
-            });
-            copy.onclick = () => {
-                navigator.clipboard.writeText(msg.content);
-                toast("Copié.", "info", 1500);
-            };
+        wrap.append(el('div', { className: 'msg_label', textContent: msg.role === 'user' ? 'Vous' : 'Lex Assistant' }), bubble);
+        if (msg.role === 'assistant') {
+            const actions = el('div', { className: 'msg_actions' });
+            const copy = el('button', { className: 'msg-action-btn', textContent: 'Copier' });
+            copy.onclick = () => { navigator.clipboard.writeText(msg.content); toast('Copié.', 'info', 1500); };
             actions.appendChild(copy);
-            if (msg.mode === "redaction" || msg.generatedDocName) {
-                const dl = el("button", {
-                    className: "msg-action-btn msg-action-btn--primary",
-                    textContent: "⬇ Télécharger .docx",
-                });
+            if (msg.mode === 'redaction' || msg.generatedDocName) {
+                const dl = el('button', { className: 'msg-action-btn msg-action-btn--primary', textContent: '⬇ Télécharger .docx' });
                 dl.onclick = async () => {
                     try {
-                        const blob = await generateDocx({
-                            title: msg.generatedDocName ?? "Document",
-                            content: msg.content,
-                            caseRef: this._activeCase?.name ?? "",
-                        });
-                        downloadBlob(blob, (msg.generatedDocName ?? "document").replace(/[^a-z0-9_\- ]/gi, "_") + ".docx");
+                        const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: msg.content, caseRef: this._activeCase?.name ?? '' });
+                        download(blob, (msg.generatedDocName ?? 'document').replace(/[^a-z0-9_\- ]/gi, '_') + '.docx');
                     }
                     catch (err) {
-                        toast("Erreur DOCX : " + err.message, "error");
+                        toast('Erreur DOCX : ' + err.message, 'error');
                     }
                 };
-                actions.appendChild(dl);
-                const odSave = el("button", {
-                    className: "msg-action-btn",
-                    textContent: "☁ Sauver sur OneDrive",
-                });
+                const odSave = el('button', { className: 'msg-action-btn', textContent: '☁ Sauver sur OneDrive' });
                 odSave.onclick = async () => {
                     if (!this._activeCase)
                         return;
                     try {
-                        const blob = await generateDocx({
-                            title: msg.generatedDocName ?? "Document",
-                            content: msg.content,
-                            caseRef: this._activeCase.name,
-                        });
+                        const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: msg.content, caseRef: this._activeCase.name });
                         const ab = await blob.arrayBuffer();
-                        const fname = (msg.generatedDocName ?? "document").replace(/[^a-z0-9_\- ]/gi, "_") + ".docx";
-                        const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                        const fname = (msg.generatedDocName ?? 'document').replace(/[^a-z0-9_\- ]/gi, '_') + '.docx';
+                        const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
                         await this.writeCaseFile(this._activeCase.folderName, fname, ab, mime);
                         if (!this._activeCase.documents.some((d) => d.name === fname)) {
-                            this._activeCase.documents.push({
-                                name: fname,
-                                kind: "redige",
-                                mimeType: mime,
-                                sizeBytes: ab.byteLength,
-                                addedAt: Date.now(),
-                            });
+                            this._activeCase.documents.push({ name: fname, kind: 'redige', mimeType: mime, sizeBytes: ab.byteLength, addedAt: Date.now() });
                             await this.saveMeta();
                             this.renderDocList();
                             this.updateDocCount();
                         }
-                        toast(`"${fname}" sauvegardé.`, "success");
+                        toast(`"${fname}" sauvegardé.`, 'success');
                     }
                     catch (err) {
-                        toast("Erreur OneDrive : " + err.message, "error");
+                        toast('Erreur OneDrive : ' + err.message, 'error');
                     }
                 };
-                actions.appendChild(odSave);
+                actions.append(dl, odSave);
             }
             wrap.appendChild(actions);
         }
         return wrap;
     }
-    appendMsg(msg) {
-        const area = byID("chat-area");
-        if (!area)
-            return;
-        area.querySelector(".empty-state")?.remove();
-        area.appendChild(this.buildMsgEl(msg));
-        area.scrollTop = area.scrollHeight;
-    }
-    appendTyping() {
-        const area = byID("chat-area");
-        const typing = el("div", { className: "msg msg--assistant", id: "typing" });
-        const bubble = el("div", { className: "msg__bubble" });
-        bubble.append(spinnerEl(), el("span", { textContent: " Analyse en cours…" }));
-        typing.append(el("div", { className: "msg__label", textContent: "Lex Assistant" }), bubble);
-        area.appendChild(typing);
-        area.scrollTop = area.scrollHeight;
-        return typing;
-    }
-    // ─── Send message ─────────────────────────────────────────────────────────────
-    async sendMessage() {
-        const ta = byID("user-input");
-        if (!ta)
+    // ─── Send message ─────────────────────────────────────────────────────────
+    async sendMessage(ta, sendBtn) {
+        if (!ta || !this._activeCase)
             return;
         const text = ta.value.trim();
-        if (!text || !this._activeCase)
+        if (!text)
             return;
-        if (!getStoredKey()) {
-            this.openSettingsModal();
-            toast("Configurez votre clé API Claude.", "error");
-            return;
-        }
-        if (!oneDrive.userName) {
-            await this.connectOneDrive();
-            return;
-        }
-        ta.value = "";
+        ta.value = '';
         this.autoResize(ta);
-        const userMsg = {
-            id: uid(),
-            role: "user",
-            content: text,
-            timestamp: Date.now(),
-            mode: this.activeMode,
-        };
+        const userMsg = { id: uid(), role: 'user', content: text, timestamp: Date.now(), mode: this.activeMode };
         this._caseMessages.push(userMsg);
-        this.appendMsg(userMsg);
-        if (this.activeMode === "note") {
-            const note = {
-                id: uid(),
-                content: text,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-            };
+        this.appendMsg(this.buildMsgEl(userMsg));
+        if (this.activeMode === 'note') {
+            const note = { id: uid(), content: text, createdAt: Date.now(), updatedAt: Date.now() };
             this._caseNotes.push(note);
             await this.saveNotes();
             this.renderNoteBar();
         }
-        const typing = this.appendTyping();
-        const sendBtn = byID("send-btn");
+        const typing = this.appendTypingTo(ids.chatArea, 'Analyse en cours…');
         if (sendBtn)
             sendBtn.disabled = true;
         try {
-            const response = await callClaudeCase({
+            const response = await this.claude.callClaudeCase(this._activeCase.folderName, {
                 caseName: this._activeCase.name,
                 caseDomain: this._activeCase.domain,
                 notes: this._caseNotes,
@@ -1071,33 +929,23 @@ export class Cases extends Scenario {
                 skills: this.skills,
                 mode: this.activeMode,
                 userMessage: text,
-                readFile: (fileName) => this.readCaseFile(this._activeCase.folderName, fileName),
+                knowledgeBase: this._caseKb ?? undefined,
+                readFile: this.readCaseFile,
             });
             typing.remove();
             let docName;
-            if (this.activeMode === "redaction") {
-                const first = response
-                    .split("\n")[0]
-                    .replace(/^#+\s*/, "")
-                    .trim();
-                docName =
-                    first.length > 0 && first.length < 100 ? first : "Document rédigé";
+            if (this.activeMode === 'redaction') {
+                const first = response.split('\n')[0].replace(/^#+\s*/, '').trim();
+                docName = first.length > 0 && first.length < 100 ? first : 'Document rédigé';
             }
-            const asst = {
-                id: uid(),
-                role: "assistant",
-                content: response,
-                timestamp: Date.now(),
-                mode: this.activeMode,
-                generatedDocName: docName,
-            };
+            const asst = { id: uid(), role: 'assistant', content: response, timestamp: Date.now(), mode: this.activeMode, generatedDocName: docName };
             this._caseMessages.push(asst);
-            this.appendMsg(asst);
+            this.appendMsg(this.buildMsgEl(asst));
             await this.saveConversation();
         }
         catch (err) {
             typing.remove();
-            toast(err.message, "error", 6000);
+            toast(err.message, 'error', 6000);
             this._caseMessages.pop();
         }
         finally {
@@ -1106,69 +954,131 @@ export class Cases extends Scenario {
             ta.focus();
         }
     }
-    // ─── Modals ───────────────────────────────────────────────────────────────────
+    // ─── UI setup ─────────────────────────────────────────────────────────────
+    setupBarsBtns() {
+        const btn = (id) => byID(id);
+        this.onClick(btn(ids.btnNewSidebar), () => this.openCaseFormModal(null));
+        this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
+        this.onClick(btn('btn-settings'), () => this.openSettingsModal());
+        this.onClick(btn('btn-onedrive'), async () => { await this.refreshCaseFromOneDrive(); });
+        this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
+        this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
+        this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
+        this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
+        this.onClick(btn(ids.btnCaseSummary), async () => {
+            const ta = byID(ids.userInput);
+            if (!ta)
+                return;
+            ta.value = 'Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d\'attention prioritaires.';
+            await this.sendMessage(byID(ids.toast), byID(ids.sendBtn));
+        });
+        qsa('.doc-filter-tab').forEach((tab) => this.onClick(tab, () => {
+            setActive(qsa('.doc-filter-tab'), tab, 'active');
+            this._docFilter = (tab.dataset.filter ?? null);
+            this.renderDocList();
+        }));
+        qsa('.mode-btn[data-mode]').forEach((b) => this.onClick(b, () => {
+            setActive(qsa('.mode-btn[data-mode]'), b, 'active');
+            this.activeMode = b.dataset.mode;
+            const hints = {
+                analyse: 'Posez une question, demandez une analyse du dossier…',
+                redaction: 'Précisez l\'acte à rédiger (courrier, assignation, conclusions, contrat…)',
+                modification: 'Indiquez le document à modifier et les changements souhaités…',
+                note: 'Rédigez une correction → sauvegardée dans _notes.json…',
+            };
+            const ta = byID(ids.userInput);
+            if (ta)
+                ta.placeholder = hints[this.activeMode];
+        }));
+    }
+    updateQuickPrompts(ta) {
+        qsa('.quick-btn').forEach((b) => {
+            b.onclick = () => { ta.value = b.dataset.prompt ?? ''; this.autoResize(ta); ta.focus(); };
+        });
+    }
+    setupFileUpload() {
+        const fi = byID(ids.fileInput);
+        if (!fi)
+            return;
+        fi.onchange = async () => {
+            if (!fi.files?.length || !this._activeCase)
+                return;
+            for (const file of Array.from(fi.files)) {
+                if (!isSupported(file.name)) {
+                    toast(`Format non supporté : ${file.name}`, 'error');
+                    continue;
+                }
+                try {
+                    const ab = await file.arrayBuffer();
+                    const meta = makeCaseDocMeta(file);
+                    await this.writeCaseFile(this._activeCase.folderName, file.name, ab, meta.mimeType);
+                    if (!this._activeCase.documents.some((d) => d.name === file.name)) {
+                        this._activeCase.documents.push(meta);
+                        await this.saveMeta();
+                    }
+                    toast(`"${file.name}" ajouté au dossier.`, 'success');
+                }
+                catch (err) {
+                    toast(`Erreur : ${err.message}`, 'error');
+                }
+            }
+            fi.value = '';
+            this.renderDocList();
+            this.updateDocCount();
+        };
+    }
+    // ─── Modals ───────────────────────────────────────────────────────────────
     openCaseFormModal(existing) {
-        if (!oneDrive.userName) {
+        if (!oneDrive.user) {
             this.openSettingsModal();
-            toast("Connectez OneDrive d'abord.", "error");
+            toast('Connectez OneDrive d\'abord.', 'error');
             return;
         }
         const isEdit = !!existing;
-        const overlay = el("div", { className: "modal-overlay" });
-        const dialog = el("div", { className: "modal-dialog modal-dialog--form" });
+        const overlay = el('div', { className: 'modal-overlay' });
+        document.body.appendChild(overlay);
+        const dialog = el('div', { className: 'modal-dialog modal-dialog--form' });
+        overlay.appendChild(dialog);
         dialog.innerHTML = `
-      <h2 class="modal-title">${isEdit ? "Modifier le dossier" : "Nouveau dossier"}</h2>
+      <h2 class="modal-title">${isEdit ? 'Modifier le dossier' : 'Nouveau dossier'}</h2>
       <label class="form-label">Intitulé <span class="required">*</span></label>
-      <input class="form-input" id="f-name" type="text" value="${existing?.name ?? ""}"/>
+      <input class="form-input" id="f-name" type="text" value="${existing?.name ?? ''}"/>
       <label class="form-label">Domaine juridique</label>
-      <input class="form-input" id="f-domain" type="text" placeholder="Droit commercial…" value="${existing?.domain ?? ""}"/>
+      <input class="form-input" id="f-domain" type="text" placeholder="Droit commercial…" value="${existing?.domain ?? ''}"/>
       <label class="form-label">Nom du dossier OneDrive <span style="font-weight:400;color:var(--c-gray-400)">(auto si vide)</span></label>
-      <input class="form-input" id="f-folder" type="text" value="${existing?.folderName ?? ""}"/>
+      <input class="form-input" id="f-folder" type="text" value="${existing?.folderName ?? ''}"/>
       <label class="form-label">Statut</label>
       <select class="form-select" id="f-status">
-        <option value="active" ${!existing || existing.status === "active" ? "selected" : ""}>En cours</option>
-        <option value="suspended" ${existing?.status === "suspended" ? "selected" : ""}>Suspendu</option>
-        <option value="closed" ${existing?.status === "closed" ? "selected" : ""}>Clôturé</option>
+        <option value="active"    ${!existing || existing.status === 'active' ? 'selected' : ''}>En cours</option>
+        <option value="suspended" ${existing?.status === 'suspended' ? 'selected' : ''}>Suspendu</option>
+        <option value="closed"    ${existing?.status === 'closed' ? 'selected' : ''}>Clôturé</option>
       </select>
       <div class="modal-btns">
         <button class="btn btn--secondary" id="f-cancel">Annuler</button>
-        <button class="btn btn--primary" id="f-save">${isEdit ? "Enregistrer" : "Créer"}</button>
+        <button class="btn btn--primary"   id="f-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
       </div>`;
-        overlay.appendChild(dialog);
-        document.body.appendChild(overlay);
-        const nameInput = qs("#f-name", dialog);
-        const folderInput = qs("#f-folder", dialog);
-        nameInput.addEventListener("input", () => {
+        const nameInput = qs('#f-name', dialog);
+        const folderInput = qs('#f-folder', dialog);
+        nameInput.addEventListener('input', () => {
             if (!isEdit && !folderInput.value)
-                folderInput.placeholder =
-                    this.sanitiseFolder(nameInput.value) || "DOSSIER_NOM";
+                folderInput.placeholder = this.sanitiseFolder(nameInput.value) || 'DOSSIER_NOM';
         });
-        qs("#f-cancel", dialog).onclick = () => overlay.remove();
-        qs("#f-save", dialog).onclick = async () => {
+        qs('#f-cancel', dialog).onclick = () => overlay.remove();
+        qs('#f-save', dialog).onclick = async () => {
             const name = nameInput.value.trim();
-            const domain = qs("#f-domain", dialog).value.trim() ||
-                "Droit général";
+            const domain = qs('#f-domain', dialog).value.trim() || 'Droit général';
             const raw = folderInput.value.trim();
             const folder = raw ? this.sanitiseFolder(raw) : this.sanitiseFolder(name);
-            const status = qs("#f-status", dialog)
-                .value;
+            const status = qs('#f-status', dialog).value;
             if (!name || !folder) {
-                toast(!name ? "Nom obligatoire." : "Dossier invalide.", "error");
+                toast(!name ? 'Nom obligatoire.' : 'Dossier invalide.', 'error');
                 return;
             }
-            const btn = qs("#f-save", dialog);
+            const btn = qs('#f-save', dialog);
             btn.disabled = true;
-            btn.textContent = "Création…";
+            btn.textContent = 'Création…';
             const now = Date.now();
-            const meta = {
-                name,
-                folderName: folder,
-                domain,
-                status,
-                createdAt: existing?.createdAt ?? now,
-                updatedAt: now,
-                documents: existing?.documents ?? [],
-            };
+            const meta = { name, folderName: folder, domain, status, createdAt: existing?.createdAt ?? now, updatedAt: now, documents: existing?.documents ?? [] };
             try {
                 await this.writeCaseMeta(folder, meta);
                 overlay.remove();
@@ -1185,76 +1095,55 @@ export class Cases extends Scenario {
                 }
                 this.renderCaseList();
                 await this.selectCase(folder);
-                toast(isEdit ? "Dossier modifié." : "Dossier créé.", "success");
+                toast(isEdit ? 'Dossier modifié.' : 'Dossier créé.', 'success');
             }
             catch (err) {
-                toast("Erreur : " + err.message, "error");
+                toast('Erreur : ' + err.message, 'error');
                 btn.disabled = false;
-                btn.textContent = isEdit ? "Enregistrer" : "Créer";
+                btn.textContent = isEdit ? 'Enregistrer' : 'Créer';
             }
         };
         nameInput.focus();
     }
     openCaseContextMenu(c, x, y) {
-        byID("context-menu")?.remove();
-        const menu = el("div", { className: "context-menu", id: "context-menu" });
+        byID(ids.contextMenu)?.remove();
+        const menu = el('div', { className: 'context-menu', id: ids.contextMenu });
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
         const items = [
-            { label: "Modifier", action: () => this.openCaseFormModal(c) },
-            {
-                label: "☁ Sync OneDrive",
-                action: () => this.refreshCaseFromOneDrive(),
-            },
-            {
-                label: "Effacer conversation",
-                action: () => this.clearConversation(c.folderName),
-            },
-            {
-                label: "Supprimer le dossier",
-                action: () => this.deleteCaseIndex(c.folderName),
-                danger: true,
-            },
+            { label: 'Modifier', action: () => this.openCaseFormModal(c) },
+            { label: '☁ Sync OneDrive', action: () => this.refreshCaseFromOneDrive() },
+            { label: '🧠 Compléter base KB', action: () => this.buildKnowledgeBase(true) },
+            { label: 'Effacer conversation', action: () => this.clearConversation(c.folderName) },
+            { label: 'Supprimer le dossier', action: () => this.deleteCaseIndex(c.folderName), danger: true },
         ];
         for (const item of items) {
-            const btn = el("button", {
-                className: "context-menu__item" +
-                    (item.danger ? " context-menu__item--danger" : ""),
-                textContent: item.label,
-            });
-            btn.onclick = () => {
-                menu.remove();
-                item.action();
-            };
+            const btn = el('button', { className: 'context-menu_item' + (item.danger ? ' context-menu_item--danger' : ''), textContent: item.label });
+            btn.onclick = () => { menu.remove(); item.action(); };
             menu.appendChild(btn);
         }
         document.body.appendChild(menu);
-        const dismiss = (e) => {
-            if (!menu.contains(e.target)) {
-                menu.remove();
-                document.removeEventListener("click", dismiss);
-            }
-        };
-        setTimeout(() => document.addEventListener("click", dismiss), 0);
+        const dismiss = (e) => { if (!menu.contains(e.target)) {
+            menu.remove();
+            document.removeEventListener('click', dismiss);
+        } };
+        setTimeout(() => document.addEventListener('click', dismiss), 0);
     }
     async clearConversation(folderName) {
-        const ok = await confirm("Effacer tout l'historique de conversation de ce dossier ?");
-        if (!ok)
+        if (!await confirm('Effacer tout l\'historique de conversation de ce dossier ?'))
             return;
         this._caseMessages = [];
         await this.writeConversation(folderName, []);
         if (this._activeCase?.folderName === folderName)
             this.renderChat();
-        toast("Conversation effacée.", "info");
+        toast('Conversation effacée.', 'info');
     }
     async deleteCaseIndex(folderName) {
-        const ok = await confirm("Supprimer ce dossier ? Les fichiers OneDrive sont conservés, seuls les fichiers Lex Assistant (_meta, _notes, _conversation) sont supprimés.");
-        if (!ok)
+        if (!await confirm('Supprimer ce dossier ? Les fichiers OneDrive sont conservés, seuls les fichiers Lex Assistant (_meta, _notes, _conversation, _kb_*) sont supprimés.'))
             return;
-        // Delete only Lex Assistant JSON files — preserve user documents
-        for (const f of ["_meta.json", "_notes.json", "_conversation.json"]) {
-            await this.deleteFilePath(`${this.casePath(folderName)}/${f}`).catch(() => { });
-        }
+        const items = await this.listAllFolderItems(this.casePath(folderName));
+        const toDelete = items.filter((i) => i.file && (i.name.startsWith('_meta') || i.name.startsWith('_notes') || i.name.startsWith('_conversation') || i.name.startsWith('_kb_')));
+        await Promise.all(toDelete.map((i) => this.deleteFilePath(`${this.casePath(folderName)}/${i.name}`).catch(() => { })));
         this._foldersMeta = this._foldersMeta.filter((c) => c.folderName !== folderName);
         this.renderCaseList();
         if (this._activeCase?.folderName === folderName) {
@@ -1264,37 +1153,28 @@ export class Cases extends Scenario {
             else
                 this.showEmptyState();
         }
-        toast("Dossier supprimé.", "success");
+        toast('Dossier supprimé.', 'success');
     }
     openNotesModal() {
-        const overlay = el("div", { className: "modal-overlay" });
-        const dialog = el("div", { className: "modal-dialog modal-dialog--notes" });
+        const overlay = el('div', { className: 'modal-overlay' });
+        const dialog = el('div', { className: 'modal-dialog modal-dialog--notes' });
         const refresh = () => {
-            const list = qs("#notes-list", dialog);
-            list.innerHTML = "";
+            const list = qs('#notes-list', dialog);
+            list.innerHTML = '';
             if (!this._caseNotes.length) {
-                list.appendChild(el("p", {
-                    className: "note-empty",
-                    textContent: 'Aucune note. Ajoutez-en une ci-dessous ou utilisez le mode "Note permanente".',
-                }));
+                list.appendChild(el('p', { className: 'note-empty', textContent: 'Aucune note. Ajoutez-en une ci-dessous ou utilisez le mode "Note permanente".' }));
                 return;
             }
             for (const note of [...this._caseNotes].sort((a, b) => b.createdAt - a.createdAt)) {
-                const row = el("div", { className: "note-row" });
-                const del = el("button", {
-                    className: "btn btn--sm btn--danger",
-                    textContent: "Supprimer",
-                });
+                const row = el('div', { className: 'note-row' });
+                const del = el('button', { className: 'btn btn--sm btn--danger', textContent: 'Supprimer' });
                 del.onclick = async () => {
                     this._caseNotes = this._caseNotes.filter((n) => n.id !== note.id);
                     await this.saveNotes();
                     this.renderNoteBar();
                     refresh();
                 };
-                row.append(el("p", { className: "note-content", textContent: note.content }), el("span", {
-                    className: "note-meta",
-                    textContent: formatDateTime(note.createdAt),
-                }), del);
+                row.append(el('p', { className: 'note-content', textContent: note.content }), el('span', { className: 'note-meta', textContent: formatDateTime(note.createdAt) }), del);
                 list.appendChild(row);
             }
         };
@@ -1306,328 +1186,154 @@ export class Cases extends Scenario {
       <textarea class="form-textarea" id="new-note" rows="3" placeholder="Ex. : Les pénalités CGI art.1727 ne sont pas justifiées — contester systématiquement."></textarea>
       <div class="modal-btns">
         <button class="btn btn--secondary" id="n-close">Fermer</button>
-        <button class="btn btn--primary" id="n-add">Ajouter</button>
+        <button class="btn btn--primary"   id="n-add">Ajouter</button>
       </div>`;
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
         refresh();
-        qs("#n-close", dialog).onclick = () => overlay.remove();
-        qs("#n-add", dialog).onclick = async () => {
-            const val = qs("#new-note", dialog).value.trim();
+        qs('#n-close', dialog).onclick = () => overlay.remove();
+        qs('#n-add', dialog).onclick = async () => {
+            const val = qs('#new-note', dialog).value.trim();
             if (!val)
                 return;
-            const note = {
-                id: uid(),
-                content: val,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-            };
+            const note = { id: uid(), content: val, createdAt: Date.now(), updatedAt: Date.now() };
             this._caseNotes.push(note);
             await this.saveNotes();
             this.renderNoteBar();
             refresh();
-            qs("#new-note", dialog).value = "";
-            toast("Note sauvegardée dans _notes.json.", "success");
+            qs('#new-note', dialog).value = '';
+            toast('Note sauvegardée dans _notes.json.', 'success');
         };
-    }
-    openSettingsModal() {
-        byID("settings-overlay")?.remove();
-        const overlay = el("div", {
-            className: "modal-overlay",
-            id: "settings-overlay",
-        });
-        const dialog = el("div", {
-            className: "modal-dialog modal-dialog--settings",
-        });
-        dialog.innerHTML = `
-      <h2 class="modal-title">⚙ Paramètres</h2>
-      <h3 class="settings-section-title">Clé API Claude (Anthropic)</h3>
-      <p class="settings-hint">Stockée dans <code>_config.json</code> sur OneDrive. Transmise uniquement à api.anthropic.com.</p>
-      <input class="form-input" id="s-api" type="password" placeholder="sk-ant-api03-…" value="${getStoredKey()}" autocomplete="off"/>
-      <div style="display:flex;gap:8px;margin-top:6px">
-        <button class="btn btn--primary btn--sm" id="s-api-save">Enregistrer</button>
-        <button class="btn btn--secondary btn--sm" id="s-api-clear">Effacer</button>
-      </div>
-      <hr style="margin:20px 0">
-      <h3 class="settings-section-title">☁ Microsoft OneDrive (Graph API)</h3>
-      <p class="settings-hint"><strong>portal.azure.com</strong> → App registrations → New registration<br>
-      Type : SPA — Redirect URI : <code>${window.location.origin}</code><br>
-      Permissions : <code>Files.ReadWrite</code> + <code>User.Read</code></p>
-      <label class="form-label">Application (Client) ID <span class="required">*</span></label>
-      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${this.config?.clientId ?? ""}"/>
-      <label class="form-label">Tenant ID</label>
-      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${this.config?.tenantId ?? "common"}"/>
-      <label class="form-label">Dossier racine OneDrive</label>
-      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${this.config?.rootFolder ?? "LexAssistant"}"/>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <button class="btn btn--primary btn--sm" id="s-od-save">Enregistrer</button>
-        <button class="btn btn--secondary btn--sm" id="s-od-init">Initialiser structure OneDrive</button>
-        <button class="btn btn--secondary btn--sm" id="s-od-signout">Déconnecter</button>
-      </div>
-      ${oneDrive.userName ? `<p class="od-connected-label">✓ Connecté : ${oneDrive.userName}</p>` : ""}
-      <div class="modal-btns" style="margin-top:24px">
-        <button class="btn btn--secondary" id="s-close">Fermer</button>
-      </div>`;
-        overlay.appendChild(dialog);
-        document.body.appendChild(overlay);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay)
-                overlay.remove();
-        });
-        qs("#s-close", dialog).onclick = () => overlay.remove();
-        qs("#s-api-save", dialog).onclick = async () => {
-            const v = qs("#s-api", dialog).value.trim();
-            if (!v) {
-                toast("Clé vide.", "error");
-                return;
-            }
-            setStoredKey(v);
-            if (oneDrive.userName) {
-                try {
-                    const existing = (await this.readAppConfig()) ?? {};
-                    await this.writeAppConfig({ ...existing, apiKey: v });
-                    toast("Clé API enregistrée sur OneDrive.", "success");
-                }
-                catch {
-                    toast("Clé mémorisée mais non sauvegardée sur OneDrive (erreur).", "error");
-                }
-            }
-            else {
-                toast("Clé mémorisée pour cette session. Connectez OneDrive pour la sauvegarder définitivement.", "info");
-            }
-        };
-        qs("#s-api-clear", dialog).onclick = async () => {
-            clearStoredKey();
-            qs("#s-api", dialog).value = "";
-            if (oneDrive.userName) {
-                try {
-                    const existing = (await this.readAppConfig()) ?? {};
-                    await this.writeAppConfig({ ...existing, apiKey: "" });
-                }
-                catch { }
-            }
-            toast("Clé effacée.", "info");
-        };
-        qs("#s-od-save", dialog).onclick = () => {
-            const clientId = qs("#s-client", dialog).value.trim();
-            const tenantId = qs("#s-tenant", dialog).value.trim() || "common";
-            const rootFolder = qs("#s-root", dialog).value.trim() || "LexAssistant";
-            if (!clientId) {
-                toast("Client ID requis.", "error");
-                return;
-            }
-            oneDrive.setConfig({ clientId, tenantId, rootFolder });
-            toast("Configuration OneDrive enregistrée.", "success");
-        };
-        qs("#s-od-init", dialog).onclick = async () => {
-            if (!oneDrive.isConfigured) {
-                toast("Sauvegardez la configuration d'abord.", "error");
-                return;
-            }
-            try {
-                if (!oneDrive.userName) {
-                    await oneDrive.signIn();
-                    oneDrive.userName = oneDrive.getSignedInUser();
-                    this.updateODStatus();
-                }
-                await this.initRootStructure();
-                toast("Structure initialisée avec succès.", "success");
-            }
-            catch (err) {
-                toast("Erreur : " + err.message, "error");
-            }
-        };
-        qs("#s-od-signout", dialog).onclick = async () => {
-            await oneDrive.signOut();
-            oneDrive.userName = null;
-            this.updateODStatus();
-            toast("Déconnecté.", "info");
-            overlay.remove();
-        };
-    }
-    // ─── UI setup ─────────────────────────────────────────────────────────────────
-    setupBarsBtns() {
-        const btn = (id) => byID(id), onClick = this.onClick;
-        [btn("btn-new-item-top"), btn("btn-new-item-sidebar")].forEach((btn) => onClick(btn, () => this.openCaseFormModal(null)));
-        onClick(btn("btn-settings"), () => this.openSettingsModal());
-        onClick(btn("btn-onedrive"), async () => {
-            if (!oneDrive.userName)
-                await this.connectOneDrive();
-            else
-                await this.refreshCaseFromOneDrive();
-        });
-        onClick(btn("btn-notes-open"), () => this.openNotesModal());
-        onClick(btn("btn-od-sync"), () => this.refreshCaseFromOneDrive());
-        onClick(btn("btn-upload"), () => btn("file-input")?.click());
-        const tabs = qsa(".doc-filter-tab");
-        tabs.forEach((tab) => onClick(tab, () => {
-            setActive(tabs, tab, "active");
-            this._docFilter = (tab.dataset.filter ??
-                null);
-            this.renderDocList();
-        }));
-        const btns = qsa(".mode-btn[data-mode]");
-        btns.forEach((btn) => onClick(btn, () => {
-            setActive(btns, btn, "active");
-            this.activeMode = btn.dataset.mode;
-            const hints = {
-                analyse: "Posez une question, demandez une analyse du dossier…",
-                redaction: "Précisez l'acte à rédiger (courrier, assignation, conclusions, contrat…)",
-                modification: "Indiquez le document à modifier et les changements souhaités…",
-                note: "Rédigez une correction → sauvegardée dans _notes.json…",
-            };
-            const ta = byID("user-input");
-            if (!ta)
-                return;
-            ta.placeholder = hints[this.activeMode];
-        }));
-        const summBtn = btn("btn-case-summary");
-        onClick(summBtn, async () => {
-            const ta = btn("user-input");
-            if (!ta)
-                return;
-            ta.value =
-                "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
-            await this.sendMessage();
-        });
-    }
-    autoResize(ta) {
-        ta.style.height = "auto";
-        ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-    }
-    setupInputArea() {
-        const ta = byID("user-input");
-        const sendBtn = byID("send-btn");
-        if (!ta || !sendBtn)
-            return;
-        ta.addEventListener("input", () => this.autoResize(ta));
-        ta.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
-        sendBtn.onclick = () => this.sendMessage();
-        qsa(".quick-btn").forEach((b) => {
-            b.onclick = () => {
-                ta.value = b.dataset.prompt ?? "";
-                this.autoResize(ta);
-                ta.focus();
-            };
-        });
     }
     showEmptyState() {
-        const area = byID("chat-area");
+        const area = byID(ids.chatArea);
         if (!area)
             return;
-        area.innerHTML = "";
-        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "⚖️" }), el("h2", { textContent: "Bienvenue dans Lex Assistant" }), el("p", {
-            textContent: "Connectez OneDrive et créez votre premier dossier.",
-        }), (() => {
-            const b = el("button", {
-                className: "btn btn--primary",
-                textContent: "+ Nouveau dossier",
-            });
-            b.onclick = () => this.openCaseFormModal(null);
-            return b;
-        })()));
-    }
-    showNotConnected() {
-        const area = byID("chat-area");
-        if (!area)
-            return;
-        area.innerHTML = "";
-        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "☁" }), el("h2", { textContent: "OneDrive non connecté" }), el("p", {
-            textContent: "Configurez votre App Registration Azure et connectez-vous.",
-        }), (() => {
-            const b = el("button", {
-                className: "btn btn--primary",
-                textContent: "☁ Configurer OneDrive",
-            });
-            b.onclick = () => this.openSettingsModal();
-            return b;
-        })()));
-    }
-    sanitiseFolder(name) {
-        return name
-            .replace(/[/\\:*?"<>|]/g, "_")
-            .replace(/\s+/g, "_")
-            .slice(0, 60);
+        area.innerHTML = '';
+        area.appendChild(el('div', { className: 'empty-state' }, el('div', { className: 'empty-icon', textContent: '⚖️' }), el('h2', { textContent: 'Bienvenue dans Lex Assistant' }), el('p', { textContent: 'Connectez OneDrive et créez votre premier dossier.' }), (() => { const b = el('button', { className: 'btn btn--primary', textContent: '+ Nouveau dossier' }); b.onclick = () => this.openCaseFormModal(null); return b; })()));
     }
 }
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
-export class Library extends Scenario {
-    mainFolder = FOLDER_LIBRARY;
-    activeDomain = "all";
+export class Library extends Common {
+    activeDomain = 'all';
     domainDocs = new Map();
     libMessages = [];
+    _libKb = null; // cached knowledge base for active domain
     DOMAINS = [
-        { id: "commercial", label: "Commercial", icon: "🏢" },
-        { id: "fiscal", label: "Fiscal", icon: "💰" },
-        { id: "social", label: "Social", icon: "👥" },
-        { id: "civil", label: "Civil", icon: "⚖️" },
-        { id: "penal", label: "Pénal", icon: "🔒" },
-        { id: "immobilier", label: "Immobilier", icon: "🏠" },
-        { id: "international", label: "International", icon: "🌐" },
-        { id: "autre", label: "Autre", icon: "📚" },
+        { id: 'commercial', label: 'Commercial', icon: '🏢' },
+        { id: 'fiscal', label: 'Fiscal', icon: '💰' },
+        { id: 'social', label: 'Social', icon: '👥' },
+        { id: 'civil', label: 'Civil', icon: '⚖️' },
+        { id: 'penal', label: 'Pénal', icon: '🔒' },
+        { id: 'immobilier', label: 'Immobilier', icon: '🏠' },
+        { id: 'international', label: 'International', icon: '🌐' },
+        { id: 'autre', label: 'Autre', icon: '📚' },
     ];
+    // ─── Boot ─────────────────────────────────────────────────────────────────
+    async showUI() {
+        const content = byID(ids.content);
+        content.innerHTML = '';
+        content.className = 'bibliotheque-view';
+        content.appendChild(this.buildUI());
+        if (this.userName()) {
+            this.updateODStatus();
+            this.setupInputArea();
+            this.renderDomainPills();
+            this.libMessages = await this.readLibConversation().catch(() => []);
+            this.renderChat();
+            this.renderDocList();
+            this.setupFileUpload();
+            await this.fetchSkills();
+            this.updateSkillIndicator();
+        }
+        else {
+            this.showNotConnected();
+        }
+    }
+    // ─── UI builder ───────────────────────────────────────────────────────────
+    buildUI() {
+        const wrap = el('div', { className: 'lib-layout' });
+        const sidebar = el('div', { className: 'lib-sidebar' });
+        const hdr = el('div', { className: 'lib-sidebar_header' });
+        hdr.append(el('span', { className: 'lib-sidebar_title', textContent: 'Bibliothèque juridique' }));
+        const skillBadge = el('span', { className: 'lib-skill-badge', id: ids.libSkillsBadge });
+        toggle(skillBadge, false);
+        hdr.appendChild(skillBadge);
+        const fi = el('input', { type: 'file', id: ids.fileInput, multiple: true, accept: '.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md', style: { display: 'none' } });
+        const upBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '⬆ Ajouter', id: ids.btnLibUpload });
+        const synBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '⟳ Sync OneDrive', id: ids.btnLibSync });
+        const kbBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '🧠 Base KB', id: ids.btnBuildKb });
+        upBtn.onclick = () => fi.click();
+        synBtn.onclick = async () => await this.syncCurrentDomain();
+        kbBtn.onclick = () => this.buildKnowledgeBase();
+        const acts = el('div', { className: 'lib-action-row' });
+        acts.append(fi, upBtn, synBtn, kbBtn);
+        sidebar.append(hdr, el('div', { className: 'lib-domain-pills', id: ids.libDomainPills }), el('div', { className: 'lib-doc-list', id: ids.libDocList }), acts);
+        const main = el('div', { className: 'lib-main' });
+        const topbar = el('div', { className: 'lib-topbar' });
+        const domLbl = el('span', { className: 'lib-topbar_domain', id: ids.libActiveDomain, textContent: 'Tous domaines' });
+        const skillLbl = el('span', { className: 'lib-topbar_skills', id: ids.libSkillsTop });
+        const clrBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: 'Effacer conversation' });
+        clrBtn.onclick = () => this.clearLibConv();
+        topbar.append(domLbl, skillLbl, clrBtn);
+        const chatArea = el('div', { className: 'chat-area', id: ids.libChatArea, role: 'log' });
+        chatArea.setAttribute('aria-live', 'polite');
+        const quickArea = el('div', { className: 'lib-quick-prompts', id: ids.quickPrompts });
+        const inputArea = el('div', { className: 'lib-input-area' });
+        const ta = el('textarea', { id: ids.userInput, rows: 2, placeholder: 'Interrogez la bibliothèque…' });
+        const sendBtn = el('button', { className: 'btn btn--primary', id: ids.sendBtn });
+        sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+        inputArea.append(ta, sendBtn);
+        main.append(topbar, quickArea, chatArea, inputArea);
+        wrap.append(sidebar, main);
+        return wrap;
+    }
     domainLabel(id) {
-        if (id === "all")
-            return "Tous domaines";
+        if (id === 'all')
+            return 'Tous domaines';
         return this.DOMAINS.find((d) => d.id === id)?.label ?? id;
     }
-    // ─── Path helpers ─────────────────────────────────────────────────────────────
-    libDomainFolder(subFolder) {
-        const cap = subFolder.charAt(0).toUpperCase() + subFolder.slice(1);
-        return `${this._rootFolder}/${FOLDER_LIBRARY}/${cap}`;
+    // ─── Path helpers ─────────────────────────────────────────────────────────
+    libDomainPath(domain) {
+        return `${this.root}/${this.mainFolder}/${this.domainLabel(domain)}`;
     }
-    libMetaPath(subFolder) {
-        return `${this.libDomainFolder(subFolder)}/_meta.json`;
+    libMetaPath(domain) {
+        return `${this.libDomainPath(domain)}/_meta.json`;
     }
-    // ─── CRUD ─────────────────────────────────────────────────────────────────────
+    getConvPath() {
+        return this.activeDomain === 'all'
+            ? `${this.root}/${this.mainFolder}/_conversation.json`
+            : `${this.libDomainPath(this.activeDomain)}/_conversation.json`;
+    }
+    // ─── OneDrive CRUD ────────────────────────────────────────────────────────
     async readLibMeta(domain) {
         return this.readJson(this.libMetaPath(domain));
     }
     async writeLibMeta(meta) {
-        await this.ensureFolder(this.libDomainFolder(meta.domain));
+        await this.ensureFolder(this.libDomainPath(meta.domain));
         await this.writeJson(this.libMetaPath(meta.domain), meta);
     }
     async readLibConversation() {
-        const path = this.getConvPath();
-        const f = await this.readJson(path);
-        return f?.messages ?? [];
+        return (await this.readJson(this.getConvPath()))?.messages ?? [];
     }
-    async writeLibConversation(messages) {
-        const path = this.getConvPath();
-        await this.writeJson(path, { messages });
-    }
-    getConvPath() {
-        return this.activeDomain === "all"
-            ? `${this._rootFolder}/${FOLDER_LIBRARY}/_conversation.json`
-            : `${this.libDomainFolder(this.activeDomain)}/_conversation.json`;
+    writeLibConversation(messages) {
+        return this.writeJson(this.getConvPath(), { messages });
     }
     async listLibFiles(domain) {
-        try {
-            const items = await this.listFolder(this.libDomainFolder(domain));
-            return items.filter((i) => i.file && !i.name.startsWith("_"));
-        }
-        catch {
-            return [];
-        }
+        return this.listFiles(this.libDomainPath(domain));
     }
     async readLibFile(domain, fileName) {
-        return this.readFilePath(`${this.libDomainFolder(domain)}/${fileName}`);
+        return this.readFilePath(`${this.libDomainPath(domain)}/${fileName}`);
     }
     async writeLibFile(domain, fileName, data, mimeType) {
-        await this.ensureFolder(this.libDomainFolder(domain));
-        await this.writeFileLarge(`${this.libDomainFolder(domain)}/${fileName}`, data, mimeType);
+        await this.ensureFolder(this.libDomainPath(domain));
+        await this.writeFileLarge(`${this.libDomainPath(domain)}/${fileName}`, data, mimeType);
     }
-    // ─── Domain meta ─────────────────────────────────────────────────────────────
+    // ─── Domain meta ──────────────────────────────────────────────────────────
     async loadDomainMeta(domain) {
         if (this.domainDocs.has(domain))
             return this.domainDocs.get(domain);
-        const meta = await this.readLibMeta(domain).catch(() => null);
-        const docs = meta?.documents ?? [];
+        const docs = (await this.readLibMeta(domain).catch(() => null))?.documents ?? [];
         this.domainDocs.set(domain, docs);
         return docs;
     }
@@ -1635,9 +1341,16 @@ export class Library extends Scenario {
         this.domainDocs.set(domain, docs);
         await this.writeLibMeta({ domain, documents: docs });
     }
-    // ─── Sync from OneDrive ───────────────────────────────────────────────────────
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    async initRootStructure() {
+        await super.initRootStructure();
+        for (const d of this.DOMAINS) {
+            await this.ensureFolder(this.libDomainPath(d.id));
+        }
+    }
+    // ─── Sync from OneDrive ───────────────────────────────────────────────────
     async syncDomainFromOneDrive(domain) {
-        if (!oneDrive.userName)
+        if (!oneDrive.user)
             await this.connectOneDrive();
         const items = await this.listLibFiles(domain);
         const existing = await this.loadDomainMeta(domain);
@@ -1647,204 +1360,119 @@ export class Library extends Scenario {
                 continue;
             if (existing.some((d) => d.name === item.name))
                 continue;
-            existing.push({
-                name: item.name,
-                mimeType: item.file.mimeType || "application/octet-stream",
-                sizeBytes: item.size ?? 0,
-                addedAt: Date.now(),
-                tags: [],
-            });
+            existing.push({ name: item.name, mimeType: item.file.mimeType || 'application/octet-stream', sizeBytes: item.size ?? 0, addedAt: Date.now(), tags: [] });
             added++;
         }
-        // FIX: save to the correct domain being synced, not activeDomain
         if (added > 0)
             await this.saveDomainMeta(domain, existing);
         return added;
     }
-    setupBarsBtns() {
-        const btn = (id) => byID(id), onClick = this.onClick;
-        [btn("btn-new-item-top"), btn("btn-new-item-sidebar")].forEach((btn) => onClick(btn, () => this.loadAllSubFolders()));
-        onClick(btn("btn-settings"), () => this.openSettingsModal());
-        onClick(btn("btn-onedrive"), async () => await this.syncCurrentDomain());
-        onClick(btn("btn-od-sync"), async () => await this.syncCurrentDomain());
-        onClick(btn("btn-upload"), () => btn("file-input")?.click());
-        const btns = qsa(".mode-btn[data-mode]");
-        const ta = btn("user-input");
-        const hints = {
-            analyse: "Posez une question, demandez une analyse du dossier…",
-            redaction: "Précisez l'acte à rédiger (courrier, assignation, conclusions, contrat…)",
-            modification: "Indiquez le document à modifier et les changements souhaités…",
-            note: "Rédigez une correction → sauvegardée dans _notes.json…",
-        };
-        btns.forEach((btn) => onClick(btn, () => {
-            setActive(btns, btn, "active");
-            this.activeMode = btn.dataset.mode;
-            if (!ta)
-                return;
-            ta.placeholder = hints[this.activeMode];
-        }));
-        onClick(btn("btn-case-summary"), async () => {
-            const ta = btn("user-input");
-            if (!ta)
-                return;
-            ta.value =
-                "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
-            await this.sendMessage();
-        });
+    async syncCurrentDomain() {
+        const btn = byID(ids.btnLibSync);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⟳ Sync…';
+        }
+        try {
+            let total = 0;
+            if (this.activeDomain === 'all') {
+                for (const d of this.DOMAINS)
+                    total += await this.syncDomainFromOneDrive(d.id);
+            }
+            else {
+                total = await this.syncDomainFromOneDrive(this.activeDomain);
+            }
+            this.renderDocList();
+            this.renderDomainPills();
+            toast(`${total} nouveau(x) document(s) indexé(s).`, 'success');
+        }
+        catch (err) {
+            toast('Erreur sync : ' + err.message, 'error');
+        }
+        finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '⟳ Sync OneDrive';
+            }
+        }
     }
-    sendMessage() {
-        //!Missing
+    // ─── Knowledge base ───────────────────────────────────────────────────────
+    async buildKnowledgeBase(appendMode = false) {
+        if (this.activeDomain === 'all') {
+            toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info');
+            return;
+        }
+        const btn = byID(ids.btnBuildKb);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '🧠 Génération…';
+        }
+        try {
+            const docs = this.domainDocs.get(this.activeDomain) ?? [];
+            const markdown = await this.claude.buildLibKnowledgeBase(this.activeDomain, docs, (name) => this.readLibFile(this.activeDomain, name), [], appendMode);
+            // Save versioned markdown to OneDrive
+            const filename = `_kb_${this.activeDomain}_${this.claude.kbTimestamp}.md`;
+            const filePath = `${this.libDomainPath(this.activeDomain)}/${filename}`;
+            await this.writeFilePath(filePath, markdown, 'text/markdown');
+            this._libKb = markdown;
+            toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
+        }
+        catch (err) {
+            toast('Erreur KB : ' + err.message, 'error');
+        }
+        finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🧠 Base de connaissance';
+            }
+        }
     }
-    loadAllSubFolders() {
-        //!Missing
-    }
-    // ─── Boot ─────────────────────────────────────────────────────────────────────
-    async bootLib(container) {
-        container.innerHTML = "";
-        container.appendChild(this.buildUI());
-        await this.loadApiKey();
-        // Use `this` throughout — no second instance
-        this.libMessages = await this.readLibConversation().catch(() => []);
-        this.renderDomainPills();
-        this.renderLibChat();
-        this.renderLibDocList();
-        this.setupLibInput();
-        this.setupLibUpload();
-        this.updateLibSkillIndicator();
-    }
-    // ─── UI builder ───────────────────────────────────────────────────────────────
-    buildUI() {
-        const wrap = el("div", { className: "lib-layout" });
-        const sidebar = el("div", { className: "lib-sidebar" });
-        const hdr = el("div", { className: "lib-sidebar__header" });
-        hdr.appendChild(el("span", {
-            className: "lib-sidebar__title",
-            textContent: "Bibliothèque juridique",
-        }));
-        const skillBadge = el("span", {
-            className: "lib-skill-badge",
-            id: "lib-skill-badge",
-        });
-        toggle(skillBadge, false);
-        hdr.appendChild(skillBadge);
-        sidebar.appendChild(hdr);
-        sidebar.appendChild(el("div", { className: "lib-domain-pills", id: "lib-domain-pills" }));
-        sidebar.appendChild(el("div", { className: "lib-doc-list", id: "lib-doc-list" }));
-        const acts = el("div", { className: "lib-action-row" });
-        const fi = el("input", {
-            type: "file",
-            id: "lib-file-input",
-            multiple: true,
-        });
-        fi.accept =
-            ".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md";
-        fi.style.display = "none";
-        const upBtn = el("button", {
-            className: "btn btn--ghost btn--sm",
-            textContent: "⬆ Ajouter",
-            id: "btn-lib-upload",
-        });
-        upBtn.onclick = () => fi.click();
-        const synBtn = el("button", {
-            className: "btn btn--ghost btn--sm",
-            textContent: "⟳ Sync OneDrive",
-            id: "btn-lib-sync",
-        });
-        synBtn.onclick = async () => await this.syncCurrentDomain();
-        acts.append(fi, upBtn, synBtn);
-        sidebar.appendChild(acts);
-        const main = el("div", { className: "lib-main" });
-        const topbar = el("div", { className: "lib-topbar" });
-        const domLbl = el("span", {
-            className: "lib-topbar_domain",
-            id: "lib-active-domain",
-            textContent: "Tous domaines",
-        });
-        const skillLbl = el("span", {
-            className: "lib-topbar__skills",
-            id: "lib-skills-top",
-        });
-        const clrBtn = el("button", {
-            className: "btn btn--ghost btn--sm",
-            textContent: "Effacer conversation",
-        });
-        clrBtn.onclick = () => this.clearLibConv();
-        topbar.append(domLbl, skillLbl, clrBtn);
-        const quickArea = el("div", {
-            className: "lib-quick-prompts",
-            id: "lib-quick-prompts",
-        });
-        const chatArea = el("div", {
-            className: "chat-area",
-            id: "lib-chat-area",
-            role: "log",
-        });
-        chatArea.setAttribute("aria-live", "polite");
-        const inputArea = el("div", { className: "lib-input-area" });
-        const ta = el("textarea", {
-            id: "lib-input",
-            rows: 2,
-            placeholder: "Interrogez la bibliothèque…",
-        });
-        const sendBtn = el("button", {
-            className: "btn btn--primary",
-            id: "lib-send-btn",
-        });
-        sendBtn.innerHTML =
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-        inputArea.append(ta, sendBtn);
-        main.append(topbar, quickArea, chatArea, inputArea);
-        wrap.append(sidebar, main);
-        return wrap;
-    }
-    // ─── Domain navigation ────────────────────────────────────────────────────────
+    // ─── Domain navigation ────────────────────────────────────────────────────
     renderDomainPills() {
-        const container = byID("lib-domain-pills");
+        const container = byID(ids.libDomainPills);
         if (!container)
             return;
-        container.innerHTML = "";
-        const all = el("button", {
-            className: `lib-pill${this.activeDomain === "all" ? " active" : ""}`,
-            textContent: "Tous",
-        });
-        all.onclick = () => this.switchDomain("all");
+        container.innerHTML = '';
+        const all = el('button', { className: `lib-pill${this.activeDomain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
+        all.onclick = () => this.switchDomain('all');
         container.appendChild(all);
         for (const d of this.DOMAINS) {
             const docs = this.domainDocs.get(d.id) ?? [];
-            const pill = el("button", {
-                className: `lib-pill${this.activeDomain === d.id ? " active" : ""}`,
-            });
+            const pill = el('button', { className: `lib-pill${this.activeDomain === d.id ? ' active' : ''}` });
             pill.textContent = `${d.icon} ${d.label}`;
             if (docs.length)
-                pill.appendChild(el("span", {
-                    className: "lib-pill__count",
-                    textContent: String(docs.length),
-                }));
+                pill.appendChild(el('span', { className: 'lib-pill_count', textContent: String(docs.length) }));
             pill.onclick = () => this.switchDomain(d.id);
             container.appendChild(pill);
         }
     }
     async switchDomain(domain) {
         this.activeDomain = domain;
-        if (domain !== "all")
+        this._libKb = null;
+        if (domain !== 'all') {
             await this.loadDomainMeta(domain);
+            // Try to load the latest KB for this domain
+            const kb = await this.claude.loadLatestCaseKb(this.libDomainPath(domain), (p) => this.listAllFolderItems(p), (p) => this.readFilePath(p));
+            if (kb)
+                this._libKb = kb.content;
+        }
         this.libMessages = await this.readLibConversation().catch(() => []);
         this.renderDomainPills();
-        this.renderLibDocList();
-        this.renderLibChat();
-        const lbl = byID("lib-active-domain");
+        this.renderDocList();
+        this.renderChat();
+        const lbl = byID(ids.libActiveDomain);
         if (lbl)
             lbl.textContent = this.domainLabel(domain);
-        this.updateQuickPrompts();
+        this.updateQuickPrompts(byID(ids.toast));
     }
-    // ─── Render: lib doc list ─────────────────────────────────────────────────────
-    renderLibDocList() {
-        const list = byID("lib-doc-list");
+    // ─── Render: lib doc list ─────────────────────────────────────────────────
+    renderDocList() {
+        const list = byID(ids.libDocList);
         if (!list)
             return;
-        list.innerHTML = "";
+        list.innerHTML = '';
         let docs = [];
-        if (this.activeDomain === "all") {
+        if (this.activeDomain === 'all') {
             for (const [, d] of this.domainDocs)
                 docs.push(...d);
         }
@@ -1853,28 +1481,17 @@ export class Library extends Scenario {
         }
         docs = docs.sort((a, b) => b.addedAt - a.addedAt);
         if (!docs.length) {
-            list.appendChild(el("div", {
-                className: "lib-doc-empty",
-                textContent: "Aucun document. Ajoutez ou synchronisez.",
-            }));
+            list.appendChild(el('div', { className: 'lib-doc-empty', textContent: 'Aucun document. Ajoutez ou synchronisez.' }));
             return;
         }
         for (const doc of docs) {
-            const item = el("div", { className: "lib-doc-item" });
-            const info = el("div", { className: "doc-info" });
-            info.append(el("div", { className: "doc-name", textContent: doc.name }), el("div", {
-                className: "doc-meta",
-                textContent: `${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)} · ${formatDate(doc.addedAt)}`,
-            }));
-            const del = el("button", {
-                className: "doc-delete",
-                textContent: "×",
-                title: "Retirer de la bibliothèque",
-            });
+            const item = el('div', { className: 'lib-doc-item' });
+            const info = el('div', { className: 'doc-info' });
+            info.append(el('div', { className: 'doc-name', textContent: doc.name }), el('div', { className: 'doc-meta', textContent: `${mimeLabel(doc.mimeType)} · ${formatSize(doc.sizeBytes)} · ${formatDate(doc.addedAt)}` }));
+            const del = el('button', { className: 'doc-delete', textContent: '×', title: 'Retirer de la bibliothèque' });
             del.onclick = async (e) => {
                 e.stopPropagation();
-                const ok = await confirm(`Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`);
-                if (!ok)
+                if (!await confirm(`Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`))
                     return;
                 for (const [dom, list] of this.domainDocs) {
                     const idx = list.findIndex((d) => d.name === doc.name);
@@ -1884,149 +1501,95 @@ export class Library extends Scenario {
                         break;
                     }
                 }
-                this.renderLibDocList();
+                this.renderDocList();
                 this.renderDomainPills();
-                toast("Document retiré de la bibliothèque.", "info");
+                toast('Document retiré de la bibliothèque.', 'info');
             };
-            item.append(el("span", {
-                className: "doc-icon",
-                textContent: mimeIcon(doc.mimeType),
-            }), info, del);
+            item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, del);
             list.appendChild(item);
         }
     }
-    // ─── Render: lib chat ─────────────────────────────────────────────────────────
-    renderLibChat() {
-        const area = byID("lib-chat-area");
+    // ─── Render: lib chat ─────────────────────────────────────────────────────
+    renderChat() {
+        const area = byID(ids.libChatArea);
         if (!area)
             return;
-        area.innerHTML = "";
+        area.innerHTML = '';
         if (!this.libMessages.length) {
-            area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "📚" }), el("h2", { textContent: "Bibliothèque juridique" }), el("p", {
-                textContent: "Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.",
-            })));
+            area.appendChild(el('div', { className: 'empty-state' }, el('div', { className: 'empty-icon', textContent: '📚' }), el('h2', { textContent: 'Bibliothèque juridique' }), el('p', { textContent: 'Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.' })));
             return;
         }
         for (const msg of this.libMessages)
-            area.appendChild(this.buildLibMsgEl(msg));
+            area.appendChild(this.buildMsgEl(msg));
         area.scrollTop = area.scrollHeight;
     }
-    buildLibMsgEl(msg) {
-        const wrap = el("div", { className: `msg msg--${msg.role}` });
-        const bubble = el("div", { className: "msg__bubble" });
+    buildMsgEl(msg) {
+        const wrap = el('div', { className: `msg msg--${msg.role}` });
+        const bubble = el('div', { className: 'msg_bubble' });
         bubble.innerHTML = renderMarkdown(msg.content);
-        wrap.append(el("div", {
-            className: "msg__label",
-            textContent: msg.role === "user" ? "Vous" : "Lex Assistant",
-        }), bubble);
-        if (msg.role === "assistant") {
-            const acts = el("div", { className: "msg__actions" });
-            const copy = el("button", {
-                className: "msg-action-btn",
-                textContent: "Copier",
-            });
-            copy.onclick = () => {
-                navigator.clipboard.writeText(msg.content);
-                toast("Copié.", "info", 1500);
-            };
+        wrap.append(el('div', { className: 'msg_label', textContent: msg.role === 'user' ? 'Vous' : 'Lex Assistant' }), bubble);
+        if (msg.role === 'assistant') {
+            const acts = el('div', { className: 'msg_actions' });
+            const copy = el('button', { className: 'msg-action-btn', textContent: 'Copier' });
+            copy.onclick = () => { navigator.clipboard.writeText(msg.content); toast('Copié.', 'info', 1500); };
             acts.appendChild(copy);
             wrap.appendChild(acts);
         }
         return wrap;
     }
-    appendLibMsg(msg) {
-        const area = byID("lib-chat-area");
-        if (!area)
-            return;
-        area.querySelector(".empty-state")?.remove();
-        area.appendChild(this.buildLibMsgEl(msg));
-        area.scrollTop = area.scrollHeight;
-    }
-    appendLibTyping() {
-        const area = byID("lib-chat-area");
-        const typing = el("div", {
-            className: "msg msg--assistant",
-            id: "lib-typing",
-        });
-        const bubble = el("div", { className: "msg__bubble" });
-        bubble.append(spinnerEl(), el("span", { textContent: " Consultation de la bibliothèque…" }));
-        typing.append(el("div", { className: "msg__label", textContent: "Lex Assistant" }), bubble);
-        area.appendChild(typing);
-        area.scrollTop = area.scrollHeight;
-        return typing;
-    }
     async clearLibConv() {
-        const ok = await confirm("Effacer l'historique de la bibliothèque pour ce domaine ?");
-        if (!ok)
+        if (!await confirm('Effacer l\'historique de la bibliothèque pour ce domaine ?'))
             return;
         this.libMessages = [];
         await this.writeLibConversation([]);
-        this.renderLibChat();
-        toast("Conversation effacée.", "info");
+        this.renderChat();
+        toast('Conversation effacée.', 'info');
     }
-    // ─── Send lib message ─────────────────────────────────────────────────────────
-    async sendLibMessage() {
-        const ta = byID("lib-input");
-        const sendBtn = byID("lib-send-btn");
+    // ─── Send message ─────────────────────────────────────────────────────────
+    async sendMessage(ta, sendBtn) {
         if (!ta || !sendBtn)
             return;
         const text = ta.value.trim();
         if (!text)
             return;
-        ta.value = "";
+        ta.value = '';
         let docs = [];
-        if (this.activeDomain === "all") {
+        if (this.activeDomain === 'all') {
             for (const [, d] of this.domainDocs)
                 docs.push(...d);
             for (const d of this.DOMAINS) {
-                if (!this.domainDocs.has(d.id)) {
-                    const loaded = await this.loadDomainMeta(d.id);
-                    docs.push(...loaded);
-                }
+                if (!this.domainDocs.has(d.id))
+                    docs.push(...(await this.loadDomainMeta(d.id)));
             }
         }
         else {
             docs = await this.loadDomainMeta(this.activeDomain);
         }
-        const userMsg = {
-            id: uid(),
-            role: "user",
-            content: text,
-            timestamp: Date.now(),
-            domain: this.activeDomain,
-        };
+        const userMsg = { id: uid(), role: 'user', content: text, timestamp: Date.now(), domain: this.activeDomain };
         this.libMessages.push(userMsg);
-        this.appendLibMsg(userMsg);
-        const typing = this.appendLibTyping();
+        this.appendMsg(this.buildMsgEl(userMsg));
+        const typing = this.appendTypingTo(ids.libChatArea, 'Consultation de la bibliothèque…');
         sendBtn.disabled = true;
-        const history = this.libMessages.slice(-21, -1).map((m) => ({
-            role: m.role,
-            content: m.content,
-        }));
+        const history = this.libMessages.slice(-21, -1).map((m) => ({ role: m.role, content: m.content }));
         try {
-            const response = await callClaudeLib({
+            const response = await this.claude.callClaudeLib(this.activeDomain, {
                 domain: this.activeDomain,
                 docs,
                 skills: this.skills,
                 userMessage: text,
                 history,
-                readFile: (fileName) => this.readLibFile(this.activeDomain === "all" ? "all" : this.activeDomain, fileName),
+                knowledgeBase: this._libKb ?? undefined,
+                readFile: this.readLibFile,
             });
             typing.remove();
-            const asstMsg = {
-                id: uid(),
-                role: "assistant",
-                content: response,
-                timestamp: Date.now(),
-                domain: this.activeDomain,
-            };
+            const asstMsg = { id: uid(), role: 'assistant', content: response, timestamp: Date.now(), domain: this.activeDomain };
             this.libMessages.push(asstMsg);
-            this.appendLibMsg(asstMsg);
+            this.appendMsg(this.buildMsgEl(asstMsg));
             await this.writeLibConversation(this.libMessages);
         }
         catch (err) {
             typing.remove();
-            toast(err.message, "error", 6000);
+            toast(err.message, 'error', 6000);
             this.libMessages.pop();
         }
         finally {
@@ -2034,117 +1597,34 @@ export class Library extends Scenario {
             ta.focus();
         }
     }
-    // ─── Sync current domain ──────────────────────────────────────────────────────
-    async syncCurrentDomain() {
-        const btn = byID("btn-lib-sync");
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = "⟳ Sync…";
-        }
-        try {
-            let total = 0;
-            if (this.activeDomain === "all") {
-                for (const d of this.DOMAINS)
-                    total += await this.syncDomainFromOneDrive(d.id);
-            }
-            else {
-                total = await this.syncDomainFromOneDrive(this.activeDomain);
-            }
-            this.renderLibDocList();
-            this.renderDomainPills();
-            toast(`${total} nouveau(x) document(s) indexé(s).`, "success");
-        }
-        catch (err) {
-            toast("Erreur sync : " + err.message, "error");
-        }
-        finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = "⟳ Sync OneDrive";
-            }
-        }
-    }
-    // ─── Quick prompts ────────────────────────────────────────────────────────────
-    updateQuickPrompts() {
-        const area = byID("lib-quick-prompts");
+    // ─── Quick prompts ────────────────────────────────────────────────────────
+    updateQuickPrompts(ta) {
+        const area = byID(ids.quickPrompts);
         if (!area)
             return;
-        area.innerHTML = "";
+        area.innerHTML = '';
         const prompts = {
-            commercial: [
-                "Jurisprudence récente sur la responsabilité du dirigeant pour insuffisance d'actif.",
-                "Conditions de validité d'une clause de non-concurrence en droit commercial français.",
-                "Règles applicables à la cession de fonds de commerce.",
-            ],
-            fiscal: [
-                "Analyse la jurisprudence sur l'abus de droit fiscal (LPF art. L.64).",
-                "Conditions d'application de l'acte anormal de gestion.",
-                "Jurisprudence récente sur la déductibilité des charges en IS.",
-            ],
-            social: [
-                "Conditions de validité du licenciement pour motif économique.",
-                "Analyse jurisprudentielle du harcèlement moral au travail.",
-                "Règles applicables au transfert du contrat de travail (L.1224-1 CT).",
-            ],
-            civil: [
-                "Jurisprudence récente sur la responsabilité délictuelle.",
-                "Conditions de la résolution pour inexécution (C.civ. art. 1224).",
-                "Évolutions de la jurisprudence sur le préjudice moral.",
-            ],
-            penal: [
-                "Éléments constitutifs de l'abus de biens sociaux.",
-                "Jurisprudence sur la complicité en droit pénal des affaires.",
-                "Conditions de mise en cause de la responsabilité pénale des personnes morales.",
-            ],
-            immobilier: [
-                "Régime des baux commerciaux : droit au renouvellement et indemnité d'éviction.",
-                "Conditions de l'action en garantie des vices cachés en droit immobilier.",
-                "Jurisprudence sur la responsabilité du promoteur immobilier.",
-            ],
-            international: [
-                "Conditions d'applicabilité des conventions fiscales bilatérales.",
-                "Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).",
-                "Règles de conflit de lois en matière successorale (Règl. UE 650/2012).",
-            ],
-            all: [
-                "Quels sont les documents disponibles dans la bibliothèque ?",
-                "Synthèse des principales règles jurisprudentielles sur la responsabilité civile.",
-                "Analyse comparative des régimes de responsabilité civile et pénale du dirigeant.",
-            ],
+            commercial: ['Jurisprudence récente sur la responsabilité du dirigeant pour insuffisance d\'actif.', 'Conditions de validité d\'une clause de non-concurrence en droit commercial français.', 'Règles applicables à la cession de fonds de commerce.'],
+            fiscal: ['Analyse la jurisprudence sur l\'abus de droit fiscal (LPF art. L.64).', 'Conditions d\'application de l\'acte anormal de gestion.', 'Jurisprudence récente sur la déductibilité des charges en IS.'],
+            social: ['Conditions de validité du licenciement pour motif économique.', 'Analyse jurisprudentielle du harcèlement moral au travail.', 'Règles applicables au transfert du contrat de travail (L.1224-1 CT).'],
+            civil: ['Jurisprudence récente sur la responsabilité délictuelle.', 'Conditions de la résolution pour inexécution (C.civ. art. 1224).', 'Évolutions de la jurisprudence sur le préjudice moral.'],
+            penal: ['Éléments constitutifs de l\'abus de biens sociaux.', 'Jurisprudence sur la complicité en droit pénal des affaires.', 'Conditions de mise en cause de la responsabilité pénale des personnes morales.'],
+            immobilier: ['Régime des baux commerciaux : droit au renouvellement et indemnité d\'éviction.', 'Conditions de l\'action en garantie des vices cachés en droit immobilier.', 'Jurisprudence sur la responsabilité du promoteur immobilier.'],
+            international: ['Conditions d\'applicabilité des conventions fiscales bilatérales.', 'Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).', 'Règles de conflit de lois en matière successorale (Règl. UE 650/2012).'],
+            all: ['Quels sont les documents disponibles dans la bibliothèque ?', 'Synthèse des principales règles jurisprudentielles sur la responsabilité civile.', 'Analyse comparative des régimes de responsabilité civile et pénale du dirigeant.'],
         };
         const list = prompts[this.activeDomain] ?? prompts.all;
         for (const p of list) {
-            const btn = el("button", { className: "quick-btn", textContent: p });
-            btn.onclick = () => {
-                const ta = byID("lib-input");
-                if (ta) {
-                    ta.value = p;
-                    ta.focus();
-                }
-            };
+            const btn = el('button', { className: 'quick-btn', textContent: p });
+            btn.onclick = () => { {
+                ta.value = p;
+                ta.focus();
+            } };
             area.appendChild(btn);
         }
     }
-    setupLibInput() {
-        const ta = byID("lib-input");
-        const sendBtn = byID("lib-send-btn");
-        if (!ta || !sendBtn)
-            return;
-        ta.addEventListener("input", () => {
-            ta.style.height = "auto";
-            ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-        });
-        ta.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                this.sendLibMessage();
-            }
-        });
-        sendBtn.onclick = () => this.sendLibMessage();
-        this.updateQuickPrompts();
-    }
-    setupLibUpload() {
-        const fi = byID("lib-file-input");
+    setupFileUpload() {
+        const fi = byID(ids.fileInput);
         if (!fi)
             return;
         fi.onchange = async () => {
@@ -2155,7 +1635,7 @@ export class Library extends Scenario {
                 return;
             for (const file of Array.from(fi.files)) {
                 if (!isSupported(file.name)) {
-                    toast(`Format non supporté : ${file.name}`, "error");
+                    toast(`Format non supporté : ${file.name}`, 'error');
                     continue;
                 }
                 try {
@@ -2167,57 +1647,34 @@ export class Library extends Scenario {
                         existing.push(meta);
                         await this.saveDomainMeta(domain, existing);
                     }
-                    toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, "success");
+                    toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, 'success');
                 }
                 catch (err) {
-                    toast(`Erreur : ${err.message}`, "error");
+                    toast(`Erreur : ${err.message}`, 'error');
                 }
             }
-            fi.value = "";
-            this.renderLibDocList();
+            fi.value = '';
+            this.renderDocList();
             this.renderDomainPills();
         };
     }
-    updateLibSkillIndicator() {
-        const badge = byID("lib-skill-badge");
-        const top = byID("lib-skills-top");
-        const n = this.skills.length;
-        if (badge) {
-            badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";
-            toggle(badge, n > 0);
-        }
-        if (top) {
-            top.textContent =
-                n > 0 ? `${n} skill${n > 1 ? "s" : ""} actif${n > 1 ? "s" : ""}` : "";
-        }
-    }
-    // ─── Domain picker modal ──────────────────────────────────────────────────────
+    // ─── Domain picker modal ──────────────────────────────────────────────────
     pickDomainModal() {
         return new Promise((resolve) => {
-            const overlay = el("div", { className: "modal-overlay" });
-            const dialog = el("div", { className: "modal-dialog" });
-            dialog.innerHTML =
-                '<h2 class="modal-title">Domaine juridique</h2><p class="modal-subtitle">Dans quel domaine classer ce(s) document(s) ?</p>';
-            const grid = el("div", { className: "domain-grid" });
+            const overlay = el('div', { className: 'modal-overlay' });
+            const dialog = el('div', { className: 'modal-dialog' });
+            dialog.innerHTML = '<h2 class="modal-title">Domaine juridique</h2><p class="modal-subtitle">Dans quel domaine classer ce(s) document(s) ?</p>';
+            const grid = el('div', { className: 'domain-grid' });
             for (const d of this.DOMAINS) {
-                const btn = el("button", { className: "domain-btn" });
-                btn.innerHTML = `<span class="domain-btn__icon">${d.icon}</span><span>${d.label}</span>`;
-                btn.onclick = () => {
-                    overlay.remove();
-                    resolve(d.id);
-                };
+                const btn = el('button', { className: 'domain-btn' });
+                btn.innerHTML = `<span class="domain-btn_icon">${d.icon}</span><span>${d.label}</span>`;
+                btn.onclick = () => { overlay.remove(); resolve(d.id); };
                 grid.appendChild(btn);
             }
             dialog.appendChild(grid);
-            const cancel = el("button", {
-                className: "btn btn--secondary",
-                textContent: "Annuler",
-            });
-            cancel.style.marginTop = "16px";
-            cancel.onclick = () => {
-                overlay.remove();
-                resolve(null);
-            };
+            const cancel = el('button', { className: 'btn btn--secondary', textContent: 'Annuler' });
+            cancel.style.marginTop = '16px';
+            cancel.onclick = () => { overlay.remove(); resolve(null); };
             dialog.appendChild(cancel);
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);

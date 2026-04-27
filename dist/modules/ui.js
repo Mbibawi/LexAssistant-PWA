@@ -2,6 +2,7 @@
  * Lightweight DOM helpers — no framework.
  * Convention: functions named el() create elements, show()/hide() toggle visibility.
  */
+import { ids } from "../main";
 export function byID(id) {
     return document.getElementById(id);
 }
@@ -14,6 +15,8 @@ export function el(tag, attrs = {}, ...children) {
             e.innerHTML = v;
         else if (k === "textContent")
             e.textContent = v;
+        else if (k === "style")
+            Object.assign(e.style, v);
         else
             e[k] = v;
     }
@@ -42,9 +45,9 @@ export function setActive(items, active, cls = "active") {
         item.classList.toggle(cls, item === active);
 }
 export function toast(message, type = "info", durationMs = 3500) {
-    const container = byID("toast-container") ??
+    const container = byID(ids.toast) ??
         (() => {
-            const d = el("div", { id: "toast-container" });
+            const d = el("div", { id: ids.toast });
             document.body.appendChild(d);
             return d;
         })();
@@ -67,6 +70,16 @@ export function spinnerEl() {
 }
 export function uid() {
     return crypto.randomUUID();
+}
+export function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 export function formatDate(ts) {
     return new Date(ts).toLocaleDateString("fr-FR", {
