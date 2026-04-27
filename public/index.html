@@ -16,9 +16,9 @@
 
   <!-- ── Topbar ── -->
   <header id="topbar">
-    <div class="topbar__left">
-      <span class="topbar__logo">⚖</span>
-      <span class="topbar__brand">Lex Assistant</span>
+    <div class="topbar_left">
+      <span class="topbar_logo">⚖</span>
+      <span class="topbar_brand">Lex Assistant</span>
 
       <!-- Module tabs -->
       <div class="module-tabs">
@@ -26,7 +26,7 @@
         <button class="module-tab" id="tab-bibliotheque">Bibliothèque</button>
       </div>
     </div>
-    <div class="topbar__right">
+    <div class="topbar_right">
       <span id="onedrive-status" class="od-status od-status--disconnected">OneDrive</span>
       <span id="skills-badge" class="skills-badge" style="display:none"></span>
       <button id="btn-onedrive" class="btn btn--ghost btn--sm" title="OneDrive">☁ OneDrive</button>
@@ -41,13 +41,13 @@
 
       <!-- Sidebar -->
       <aside id="sidebar">
-        <div class="sidebar__section-title">Dossiers</div>
+        <div class="sidebar_section-title">Dossiers</div>
         <div id="case-list"></div>
         <button id="btn-new-item-sidebar" class="btn btn--ghost btn--dashed">+ Nouveau dossier</button>
 
-        <div class="sidebar__divider"></div>
+        <div class="sidebar_divider"></div>
 
-        <div class="sidebar__section-title">
+        <div class="sidebar_section-title">
           Pièces
           <span id="doc-count" class="doc-count">0 pièce</span>
         </div>
@@ -62,7 +62,7 @@
 
         <div id="doc-list" class="doc-list"></div>
 
-        <div class="sidebar__upload-row">
+        <div class="sidebar_upload-row">
           <input type="file" id="file-input" multiple
             accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.md,.rtf"
             style="display:none" />
@@ -75,12 +75,12 @@
       <!-- Workspace -->
       <div id="workspace">
         <div id="mode-bar">
-          <span class="mode-bar__label">Mode :</span>
+          <span class="mode-bar_label">Mode :</span>
           <button class="mode-btn active" data-mode="analyse">Analyse</button>
           <button class="mode-btn" data-mode="redaction">Rédaction</button>
           <button class="mode-btn" data-mode="modification">Modification</button>
           <button class="mode-btn" data-mode="note">Note permanente</button>
-          <div class="mode-bar__spacer"></div>
+          <div class="mode-bar_spacer"></div>
           <button id="btn-case-summary" class="btn btn--ghost btn--sm">Point dossier ↗</button>
         </div>
 
