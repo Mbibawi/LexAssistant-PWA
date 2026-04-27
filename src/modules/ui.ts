@@ -2,7 +2,7 @@
  * Lightweight DOM helpers — no framework.
  * Convention: functions named el() create elements, show()/hide() toggle visibility.
  */
-import { ids } from "../main";
+import { ids } from "../main.js";
 export function byID(id: string) {
   return document.getElementById(id) as HTMLElement | null;
 }
