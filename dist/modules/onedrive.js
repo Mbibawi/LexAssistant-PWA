@@ -21,14 +21,15 @@
  *       <file>
  *     Bibliotheque/_conversation.json ← "all" domain conversation
  */
-import { toast, spinnerEl, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive } from './ui.js';
+import { oneDrive } from "../main.js";
+import { byID, toast, spinnerEl, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from "./ui.js";
 import { renderMarkdown } from './markdown.js';
 import { callClaudeLib, callClaudeCase, getStoredKey, setStoredKey, clearStoredKey } from './api.js';
-import { isSupported, mimeLabel, mimeIcon, formatSize, makeCaseDocMeta, makeLibDocMeta, guessKind, kindLabel } from './ingest.js';
+import { isSupported, mimeLabel, mimeIcon, formatSize, makeLibDocMeta, guessKind, kindLabel } from './ingest.js';
 import { downloadBlob, generateDocx } from './docxgen.js';
 // ─── Constants ────────────────────────────────────────────────────────────────
 const LS_CONFIG = 'lex_onedrive_config';
-const MSAL_CDN = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/dist/index.iife.min.js';
+const MSAL_CDN = "https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.8.0/lib/msal-browser.min.js";
 const GRAPH = "https://graph.microsoft.com/v1.0/me/drive/root:/";
 const APP_ROOT = "Legal/Mon Cabinet d'Avocat/_LexAssistant";
 const FOLDER_LIBRARY = "Bibliotheque";
@@ -37,6 +38,10 @@ const FOLDER_SKILLS = "_Skills";
 const APP_CONFIG_FILE = "_config.json";
 // ─── Configuration ────────────────────────────────────────────────────────────
 class Configuration {
+    config;
+    constructor() {
+        this.config = this.getConfig() || this.initateConfig();
+    }
     getConfig() {
         const raw = localStorage.getItem(LS_CONFIG);
         try {
@@ -49,30 +54,47 @@ class Configuration {
     setConfig(cfg) {
         localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
     }
-    clearConfig() { localStorage.removeItem(LS_CONFIG); }
+    initateConfig() {
+        const config = {
+            clientId: prompt("Provide the OneDrive Client ID") || "",
+            tenantId: prompt("Provide the OneDrive tenant ID") || "",
+            rootFolder: APP_ROOT,
+        };
+        this.setConfig(config);
+        return config;
+    }
+    clearConfig() {
+        localStorage.removeItem(LS_CONFIG);
+    }
     isConfigured() {
-        const c = this.getConfig();
-        return Boolean(c?.clientId && c?.rootFolder);
+        return Boolean(this.config?.clientId && this.config?.rootFolder);
     }
     root() {
-        return this.getConfig()?.rootFolder ?? APP_ROOT;
+        return this.config?.rootFolder ?? APP_ROOT;
     }
 }
 // ─── oneDrive — MSAL auth + raw Graph fetch ───────────────────────────────────
-class OneDriveAuth {
+export class OneDriveAuth {
     config = new Configuration();
     _scopes = ["Files.ReadWrite", "User.Read"];
-    _app = null;
+    _msal = null;
     _loading = null;
-    _account = null;
+    account = null;
+    userName = null;
+    get isConfigured() {
+        return this.config.isConfigured();
+    }
+    setConfig(cfg) {
+        this.config.setConfig(cfg);
+    }
     getMsal() {
-        if (this._app)
-            return Promise.resolve(this._app);
+        if (this._msal)
+            return Promise.resolve(this._msal);
         if (this._loading)
             return this._loading;
         this._loading = new Promise((res, rej) => {
             const init = async () => {
-                const cfg = this.config.getConfig();
+                const cfg = this.config.config;
                 if (!cfg)
                     throw new Error("OneDrive non configuré");
                 const app = new msal.PublicClientApplication({
@@ -82,12 +104,12 @@ class OneDriveAuth {
                         redirectUri: window.location.origin,
                     },
                     cache: {
-                        cacheLocation: "sessionStorage",
+                        cacheLocation: "localStorage",
                         storeAuthStateInCookie: false,
                     },
                 });
                 await app.handleRedirectPromise().catch(() => null);
-                this._app = app;
+                this._msal = app;
                 return app;
             };
             if (msal) {
@@ -103,67 +125,64 @@ class OneDriveAuth {
         return this._loading;
     }
     async getAccessToken() {
-        const app = await this.getMsal();
-        if (!this._account) {
-            const accounts = app.getAllAccounts();
+        const msal = await this.getMsal();
+        if (!this.account) {
+            const accounts = msal.getAllAccounts();
             if (accounts.length)
-                this._account = accounts[0];
+                this.account = accounts[0];
         }
-        if (this._account) {
+        if (this.account) {
             try {
-                return (await app.acquireTokenSilent({
+                return (await msal.acquireTokenSilent({
                     scopes: this._scopes,
-                    account: this._account,
+                    account: this.account,
                 })).accessToken;
             }
             catch {
                 /* fall through to popup */
             }
         }
-        const r = await app.loginPopup({ scopes: this._scopes });
-        this._account = app.getAllAccounts()[0] ?? null;
+        const r = await msal.loginPopup({ scopes: this._scopes });
+        this.account = msal.getAllAccounts()[0] ?? null;
         return r.accessToken;
     }
     async signIn() {
-        const app = await this.getMsal();
-        await app.loginPopup({ scopes: this._scopes });
-        this._account = app.getAllAccounts()[0] ?? null;
+        const msal = await this.getMsal();
+        await msal.loginPopup({ scopes: this._scopes });
+        this.account = msal.getAllAccounts()[0] ?? null;
+        if (this.account)
+            this.userName = this.getSignedInUser();
     }
     async signOut() {
-        this._account = null;
-        this._app = null;
+        this.account = null;
+        this._msal = null;
         this._loading = null;
         sessionStorage.clear();
     }
     async isSignedIn() {
         try {
-            const app = await this.getMsal();
-            const accounts = app.getAllAccounts();
+            const msal = await this.getMsal();
+            const accounts = msal.getAllAccounts();
             if (accounts.length) {
-                this._account = accounts[0];
-                return true;
+                this.account = accounts[0];
+                return this.getSignedInUser();
             }
-            return false;
+            return null;
         }
         catch {
-            return false;
+            return null;
         }
     }
     getSignedInUser() {
-        return this._account?.name ?? this._account?.username ?? null;
+        return this.account?.name ?? this.account?.username ?? null;
     }
 }
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
-class Folders extends OneDriveAuth {
-    get rootFolder() {
-        return this.config.root();
+class Folders {
+    get _rootFolder() {
+        return oneDrive.config.root();
     }
-    token = null;
-    async setToken() {
-        if (!this.token)
-            this.token = await this.getAccessToken();
-        return this.token;
-    }
+    _token = null;
     // Encode a path for Graph: "a/b/c" → "/me/drive/root:/a/b/c:"
     encode(odPath) {
         const encoded = odPath
@@ -173,11 +192,14 @@ class Folders extends OneDriveAuth {
         return `${encoded}:`;
     }
     async gFetch(path, opts = {}, rawBody = false) {
-        const headers = {
-            Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
+        if (!this._token)
+            this._token = await oneDrive.getAccessToken();
+        const headers = opts.headers ?? {
+            Authorization: `Bearer ${this._token}`,
         };
         if (!rawBody && opts.body && typeof opts.body === "string") {
-            headers["Content-Type"] = "application/json";
+            headers["Content-Type"] =
+                "application/json";
         }
         const resp = await fetch(`${GRAPH}${path}`, { ...opts, headers });
         if (!resp.ok) {
@@ -201,8 +223,8 @@ class Folders extends OneDriveAuth {
         const name = parts.pop();
         const parentPath = parts.join("/");
         const parentEndpoint = parentPath
-            ? `${GRAPH}${this.encode(parentPath)}/children`
-            : `${GRAPH}children`;
+            ? `${this.encode(parentPath)}/children`
+            : `children`;
         await this.gFetch(parentEndpoint, {
             method: "POST",
             body: JSON.stringify({
@@ -218,34 +240,13 @@ class Folders extends OneDriveAuth {
         return data.value ?? [];
     }
     async readFilePath(filePath) {
-        const resp = await fetch(`${GRAPH}${this.encode(filePath)}/content`, {
-            headers: {
-                Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
-            },
-        });
+        const resp = await this.gFetch(`${this.encode(filePath)}/content, `);
         if (!resp.ok)
             throw new Error(`Read ${filePath}: ${resp.status}`);
         return resp.arrayBuffer();
     }
-    async writeFilePath(filePath, data, mimeType) {
-        const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
-        const resp = await fetch(`${GRAPH}${this.encode(filePath)}/content`, {
-            method: "PUT",
-            headers: {
-                Authorization: `Bearer ${this.token ?? (await this.setToken())}`,
-                "Content-Type": mimeType,
-            },
-            body,
-        });
-        if (!resp.ok) {
-            let msg = resp.statusText;
-            try {
-                const e = (await resp.json());
-                msg = e.error?.message ?? msg;
-            }
-            catch { }
-            throw new Error(`Write ${filePath}: ${msg}`);
-        }
+    async writeJson(filePath, data) {
+        await this.writeFilePath(filePath, JSON.stringify(data, null, 2), "application/json");
     }
     async writeFileLarge(filePath, data, mimeType) {
         if (data.byteLength <= 4 * 1024 * 1024) {
@@ -273,6 +274,28 @@ class Folders extends OneDriveAuth {
                 throw new Error(`Chunk upload failed at ${off}`);
         }
     }
+    async writeFilePath(filePath, data, mimeType) {
+        if (!this._token)
+            this._token = await oneDrive.getAccessToken();
+        const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
+        const resp = await this.gFetch(`${this.encode(filePath)}/content`, {
+            method: "PUT",
+            headers: {
+                Authorization: `Bearer ${this._token}`,
+                "Content-Type": mimeType,
+            },
+            body,
+        });
+        if (!resp.ok) {
+            let msg = resp.statusText;
+            try {
+                const e = (await resp.json());
+                msg = e.error?.message ?? msg;
+            }
+            catch { }
+            throw new Error(`Write ${filePath}: ${msg}`);
+        }
+    }
     async deleteFilePath(filePath) {
         await this.gFetch(`${this.encode(filePath)}`, { method: "DELETE" });
     }
@@ -286,11 +309,8 @@ class Folders extends OneDriveAuth {
             return null;
         }
     }
-    async writeJson(filePath, data) {
-        await this.writeFilePath(filePath, JSON.stringify(data, null, 2), "application/json");
-    }
     get appConfigPath() {
-        return `${this.rootFolder}/${APP_CONFIG_FILE}`;
+        return `${this._rootFolder}/${APP_CONFIG_FILE}`;
     }
     async readAppConfig() {
         return this.readJson(this.appConfigPath);
@@ -307,7 +327,7 @@ class Folders extends OneDriveAuth {
         catch { }
     }
     async initRootStructure() {
-        const r = this.rootFolder;
+        const r = this._rootFolder;
         await this.ensureFolder(r);
         await this.ensureFolder(`${r}/${FOLDER_SKILLS}`);
         await this.ensureFolder(`${r}/${FOLDER_CASES}`);
@@ -329,18 +349,256 @@ class Folders extends OneDriveAuth {
     }
 }
 // ─── Cases — dossiers scenario ────────────────────────────────────────────────
-class Cases extends Folders {
-    skills = [];
-    oneDriveUser = null;
-    saving = false;
-    docFilter = "all";
-    cases = [];
-    activeCase = null;
-    caseNotes = [];
-    caseMessages = [];
+class Scenario extends Folders {
+    config = oneDrive.config.config;
     activeMode = "analyse";
+    mainFolder = FOLDER_CASES;
+    skills = [];
     // ─── Path helpers ─────────────────────────────────────────────────────────────
-    casePath = (f) => `${this.rootFolder}/${FOLDER_CASES}/${f}`;
+    userName = () => oneDrive.userName;
+    // ─── Skills ───────────────────────────────────────────────────────────────────
+    /** Called by main.ts after fetchSkills() to load skills into both modules */
+    async fetchSkills() {
+        const path = `${this._rootFolder}/${FOLDER_SKILLS}`;
+        let items;
+        try {
+            items = await this.listFolder(path);
+            items = items.filter((item) => !item.folder);
+        }
+        catch {
+            return [];
+        }
+        const skills = [];
+        for (const item of items) {
+            const ext = item.name.split(".").pop()?.toLowerCase() ?? "";
+            if (!["md", "txt"].includes(ext))
+                continue;
+            try {
+                const buf = await this.readFilePath(`${path}/${item.name}`);
+                skills.push({
+                    name: item.name,
+                    content: new TextDecoder().decode(buf),
+                });
+            }
+            catch { }
+        }
+        this.skills = skills;
+        this.updateSkillIndicator();
+        return skills;
+    }
+    // ─── OneDrive connection ──────────────────────────────────────────────────────
+    updateODStatus() {
+        const statusEl = byID("onedrive-status");
+        if (!statusEl)
+            return;
+        if (oneDrive.userName) {
+            statusEl.textContent = `☁ ${oneDrive.userName}`;
+            statusEl.className = "od-status od-status--connected";
+        }
+        else {
+            statusEl.textContent = oneDrive.isConfigured
+                ? "☁ Non connecté"
+                : "☁ Non configuré";
+            statusEl.className = "od-status od-status--disconnected";
+        }
+    }
+    async connectOneDrive(loadSubfolders) {
+        try {
+            await oneDrive.signIn();
+            oneDrive.userName = oneDrive.getSignedInUser();
+            this.updateODStatus();
+            await this.initRootStructure();
+            await this.loadApiKey();
+            if (loadSubfolders)
+                await loadSubfolders();
+            await this.fetchSkills();
+            toast(`Connecté : ${oneDrive.userName}`, "success");
+        }
+        catch (err) {
+            toast("Erreur connexion OneDrive : " + err.message, "error");
+        }
+    }
+    // ─── Skill indicator ──────────────────────────────────────────────────────────
+    updateSkillIndicator() {
+        const badge = byID("skills-badge");
+        const n = this.skills.length;
+        if (!badge)
+            return;
+        badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";
+        toggle(badge, n > 0);
+    }
+    openSettingsModal() {
+        byID("settings-overlay")?.remove();
+        const overlay = el("div", {
+            className: "modal-overlay",
+            id: "settings-overlay",
+        });
+        const dialog = el("div", {
+            className: "modal-dialog modal-dialog--settings",
+        });
+        dialog.innerHTML = `
+      <h2 class="modal-title">⚙ Paramètres</h2>
+      <h3 class="settings-section-title">Clé API Claude (Anthropic)</h3>
+      <p class="settings-hint">Stockée dans <code>_config.json</code> sur OneDrive. Transmise uniquement à api.anthropic.com.</p>
+      <input class="form-input" id="s-api" type="password" placeholder="sk-ant-api03-…" value="${getStoredKey()}" autocomplete="off"/>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn btn--primary btn--sm" id="s-api-save">Enregistrer</button>
+        <button class="btn btn--secondary btn--sm" id="s-api-clear">Effacer</button>
+      </div>
+      <hr style="margin:20px 0">
+      <h3 class="settings-section-title">☁ Microsoft OneDrive (Graph API)</h3>
+      <p class="settings-hint"><strong>portal.azure.com</strong> → App registrations → New registration<br>
+      Type : SPA — Redirect URI : <code>${window.location.origin}</code><br>
+      Permissions : <code>Files.ReadWrite</code> + <code>User.Read</code></p>
+      <label class="form-label">Application (Client) ID <span class="required">*</span></label>
+      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${this.config?.clientId ?? ""}"/>
+      <label class="form-label">Tenant ID</label>
+      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${this.config?.tenantId ?? "common"}"/>
+      <label class="form-label">Dossier racine OneDrive</label>
+      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${this.config?.rootFolder ?? "LexAssistant"}"/>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn btn--primary btn--sm" id="s-od-save">Enregistrer</button>
+        <button class="btn btn--secondary btn--sm" id="s-od-init">Initialiser structure OneDrive</button>
+        <button class="btn btn--secondary btn--sm" id="s-od-signout">Déconnecter</button>
+      </div>
+      ${oneDrive.userName ? `<p class="od-connected-label">✓ Connecté : ${oneDrive.userName}</p>` : ""}
+      <div class="modal-btns" style="margin-top:24px">
+        <button class="btn btn--secondary" id="s-close">Fermer</button>
+      </div>`;
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay)
+                overlay.remove();
+        });
+        qs("#s-close", dialog).onclick = () => overlay.remove();
+        qs("#s-api-save", dialog).onclick = async () => {
+            const v = qs("#s-api", dialog).value.trim();
+            if (!v) {
+                toast("Clé vide.", "error");
+                return;
+            }
+            setStoredKey(v);
+            if (oneDrive.userName) {
+                try {
+                    const existing = (await this.readAppConfig()) ?? {};
+                    await this.writeAppConfig({ ...existing, apiKey: v });
+                    toast("Clé API enregistrée sur OneDrive.", "success");
+                }
+                catch {
+                    toast("Clé mémorisée mais non sauvegardée sur OneDrive (erreur).", "error");
+                }
+            }
+            else {
+                toast("Clé mémorisée pour cette session. Connectez OneDrive pour la sauvegarder définitivement.", "info");
+            }
+        };
+        qs("#s-api-clear", dialog).onclick = async () => {
+            clearStoredKey();
+            qs("#s-api", dialog).value = "";
+            if (oneDrive.userName) {
+                try {
+                    const existing = (await this.readAppConfig()) ?? {};
+                    await this.writeAppConfig({ ...existing, apiKey: "" });
+                }
+                catch { }
+            }
+            toast("Clé effacée.", "info");
+        };
+        qs("#s-od-save", dialog).onclick = () => {
+            const clientId = qs("#s-client", dialog).value.trim();
+            const tenantId = qs("#s-tenant", dialog).value.trim() || "common";
+            const rootFolder = qs("#s-root", dialog).value.trim() || "LexAssistant";
+            if (!clientId) {
+                toast("Client ID requis.", "error");
+                return;
+            }
+            oneDrive.setConfig({ clientId, tenantId, rootFolder });
+            toast("Configuration OneDrive enregistrée.", "success");
+        };
+        qs("#s-od-init", dialog).onclick = async () => {
+            if (!oneDrive.isConfigured) {
+                toast("Sauvegardez la configuration d'abord.", "error");
+                return;
+            }
+            try {
+                if (!oneDrive.userName) {
+                    await oneDrive.signIn();
+                    oneDrive.userName = oneDrive.getSignedInUser();
+                    this.updateODStatus();
+                }
+                await this.initRootStructure();
+                toast("Structure initialisée avec succès.", "success");
+            }
+            catch (err) {
+                toast("Erreur : " + err.message, "error");
+            }
+        };
+        qs("#s-od-signout", dialog).onclick = async () => {
+            await oneDrive.signOut();
+            oneDrive.userName = null;
+            this.updateODStatus();
+            toast("Déconnecté.", "info");
+            overlay.remove();
+        };
+    }
+    onClick(btn, action) {
+        if (!btn)
+            return;
+        btn.onclick = () => action();
+    }
+    autoResize(ta) {
+        ta.style.height = "auto";
+        ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+    }
+    showEmptyState() {
+        const area = byID("chat-area");
+        if (!area)
+            return;
+        area.innerHTML = "";
+        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "⚖️" }), el("h2", { textContent: "Bienvenue dans Lex Assistant" }), el("p", {
+            textContent: "Connectez OneDrive et créez votre premier dossier.",
+        }), (() => {
+            const b = el("button", {
+                className: "btn btn--primary",
+                textContent: "+ Nouveau dossier",
+            });
+            b.onclick = () => this.openCaseFormModal(null);
+            return b;
+        })()));
+    }
+    showNotConnected() {
+        const area = byID("chat-area");
+        if (!area)
+            return;
+        area.innerHTML = "";
+        area.appendChild(el("div", { className: "empty-state" }, el("div", { className: "empty-icon", textContent: "☁" }), el("h2", { textContent: "OneDrive non connecté" }), el("p", {
+            textContent: "Configurez votre App Registration Azure et connectez-vous.",
+        }), (() => {
+            const b = el("button", {
+                className: "btn btn--primary",
+                textContent: "☁ Configurer OneDrive",
+            });
+            b.onclick = () => this.openSettingsModal();
+            return b;
+        })()));
+    }
+    sanitiseFolder(name) {
+        return name
+            .replace(/[/\\:*?"<>|]/g, "_")
+            .replace(/\s+/g, "_")
+            .slice(0, 60);
+    }
+}
+export class Cases extends Scenario {
+    saving = false;
+    _docFilter = null;
+    _foldersMeta = [];
+    _activeCase = null;
+    _caseNotes = [];
+    _caseMessages = [];
+    // ─── Path helpers ─────────────────────────────────────────────────────────────
+    casePath = (f) => `${this._rootFolder}/${FOLDER_CASES}/${f}`;
     metaPath = (f) => `${this.casePath(f)}/_meta.json`;
     notesPath = (f) => `${this.casePath(f)}/_notes.json`;
     convPath = (f) => `${this.casePath(f)}/_conversation.json`;
@@ -370,9 +628,9 @@ class Cases extends Folders {
             messages,
         });
     }
-    async listCaseFolders() {
+    async listSubFolders() {
         try {
-            const items = await this.listFolder(`${this.rootFolder}/${FOLDER_CASES}`);
+            const items = await this.listFolder(`${this._rootFolder}/${this.mainFolder}`);
             return items.filter((i) => i.folder).map((i) => i.name);
         }
         catch {
@@ -392,40 +650,40 @@ class Cases extends Folders {
     }
     // ─── Persist helpers ──────────────────────────────────────────────────────────
     async saveMeta() {
-        if (!this.activeCase || this.saving)
+        if (!this._activeCase || this.saving)
             return;
         this.saving = true;
         const meta = {
-            name: this.activeCase.name,
-            folderName: this.activeCase.folderName,
-            domain: this.activeCase.domain,
-            status: this.activeCase.status,
-            createdAt: this.activeCase.createdAt,
+            name: this._activeCase.name,
+            folderName: this._activeCase.folderName,
+            domain: this._activeCase.domain,
+            status: this._activeCase.status,
+            createdAt: this._activeCase.createdAt,
             updatedAt: Date.now(),
-            documents: this.activeCase.documents,
+            documents: this._activeCase.documents,
         };
-        this.activeCase.updatedAt = meta.updatedAt;
+        this._activeCase.updatedAt = meta.updatedAt;
         try {
-            await this.writeCaseMeta(this.activeCase.folderName, meta);
+            await this.writeCaseMeta(this._activeCase.folderName, meta);
         }
         finally {
             this.saving = false;
         }
     }
     async saveNotes() {
-        if (!this.activeCase)
+        if (!this._activeCase)
             return;
-        await this.writeNotes(this.activeCase.folderName, this.caseNotes);
+        await this.writeNotes(this._activeCase.folderName, this._caseNotes);
     }
     async saveConversation() {
-        if (!this.activeCase)
+        if (!this._activeCase)
             return;
-        await this.writeConversation(this.activeCase.folderName, this.caseMessages);
+        await this.writeConversation(this._activeCase.folderName, this._caseMessages);
     }
     // ─── Skills ───────────────────────────────────────────────────────────────────
     /** Called by main.ts after fetchSkills() to load skills into both modules */
     async fetchSkills() {
-        const path = `${this.rootFolder}/${FOLDER_SKILLS}`;
+        const path = `${this._rootFolder}/${FOLDER_SKILLS}`;
         let items;
         try {
             items = await this.listFolder(path);
@@ -448,23 +706,20 @@ class Cases extends Folders {
             }
             catch { }
         }
-        this.syncSkills(skills);
-        return skills;
-    }
-    syncSkills(skills) {
         this.skills = skills;
         this.updateSkillIndicator();
+        return skills;
     }
     // ─── Load all cases ───────────────────────────────────────────────────────────
-    async loadAllCases() {
+    async loadAllSubFolders() {
         await this.loadApiKey();
-        const folders = await this.listCaseFolders();
-        this.cases = [];
-        await Promise.all(folders.map(async (folderName) => {
+        const subFolders = await this.listSubFolders();
+        this._foldersMeta = [];
+        await Promise.all(subFolders.map(async (folderName) => {
             const meta = await this.readCaseMeta(folderName);
             if (!meta)
                 return;
-            this.cases.push({
+            this._foldersMeta.push({
                 folderName,
                 name: meta.name,
                 domain: meta.domain,
@@ -474,24 +729,24 @@ class Cases extends Folders {
                 documents: meta.documents ?? [],
             });
         }));
-        this.cases.sort((a, b) => b.updatedAt - a.updatedAt);
+        this._foldersMeta.sort((a, b) => b.updatedAt - a.updatedAt);
         this.renderCaseList();
-        if (this.cases.length > 0)
-            await this.selectCase(this.cases[0].folderName);
+        if (this._foldersMeta.length > 0)
+            await this.selectCase(this._foldersMeta[0].folderName);
         else
             this.showEmptyState();
     }
     // ─── Select case ──────────────────────────────────────────────────────────────
     async selectCase(folderName) {
-        const c = this.cases.find((x) => x.folderName === folderName);
+        const c = this._foldersMeta.find((x) => x.folderName === folderName);
         if (!c)
             return;
-        this.activeCase = c;
-        this.caseNotes = await this.readNotes(folderName);
-        this.caseMessages = await this.readConversation(folderName);
+        this._activeCase = c;
+        this._caseNotes = await this.readNotes(folderName);
+        this._caseMessages = await this.readConversation(folderName);
         qsa(".case-item").forEach((el) => el.classList.toggle("active", el.dataset.folder === folderName));
-        const nameEl = document.getElementById("topbar-case-name");
-        const domainEl = document.getElementById("topbar-case-domain");
+        const nameEl = byID("topbar-case-name");
+        const domainEl = byID("topbar-case-domain");
         if (nameEl)
             nameEl.textContent = c.name;
         if (domainEl)
@@ -501,54 +756,18 @@ class Cases extends Folders {
         this.renderChat();
         this.updateDocCount();
     }
-    // ─── OneDrive connection ──────────────────────────────────────────────────────
-    updateODStatus() {
-        const statusEl = document.getElementById("onedrive-status");
-        if (!statusEl)
-            return;
-        if (this.oneDriveUser) {
-            statusEl.textContent = `☁ ${this.oneDriveUser}`;
-            statusEl.className = "od-status od-status--connected";
-        }
-        else {
-            statusEl.textContent = this.config.isConfigured()
-                ? "☁ Non connecté"
-                : "☁ Non configuré";
-            statusEl.className = "od-status od-status--disconnected";
-        }
-    }
-    async connectOneDrive() {
-        try {
-            await this.signIn();
-            this.oneDriveUser = this.getSignedInUser();
-            this.updateODStatus();
-            await this.initRootStructure();
-            await this.loadApiKey();
-            await this.loadAllCases();
-            const skills = await this.fetchSkills();
-            this.syncSkills(skills);
-            toast(`Connecté : ${this.oneDriveUser}`, "success");
-        }
-        catch (err) {
-            toast("Erreur connexion OneDrive : " + err.message, "error");
-        }
-    }
     async refreshCaseFromOneDrive() {
-        if (!this.activeCase)
+        if (!this._activeCase)
             return;
-        if (!this.oneDriveUser) {
-            await this.connectOneDrive();
-            return;
-        }
         try {
-            const items = await this.listCaseFiles(this.activeCase.folderName);
+            const items = await this.listCaseFiles(this._activeCase.folderName);
             let added = 0;
             for (const item of items) {
                 if (!item.file || !isSupported(item.name))
                     continue;
-                if (this.activeCase.documents.some((d) => d.name === item.name))
+                if (this._activeCase.documents.some((d) => d.name === item.name))
                     continue;
-                this.activeCase.documents.push({
+                this._activeCase.documents.push({
                     name: item.name,
                     kind: guessKind(item.name),
                     mimeType: item.file.mimeType || "application/octet-stream",
@@ -570,7 +789,7 @@ class Cases extends Folders {
     }
     // ─── Skill indicator ──────────────────────────────────────────────────────────
     updateSkillIndicator() {
-        const badge = document.getElementById("skills-badge");
+        const badge = byID("skills-badge");
         const n = this.skills.length;
         if (!badge)
             return;
@@ -579,7 +798,7 @@ class Cases extends Folders {
     }
     // ─── Render: case list ────────────────────────────────────────────────────────
     renderCaseList() {
-        const list = document.getElementById("case-list");
+        const list = byID("case-list");
         if (!list)
             return;
         list.innerHTML = "";
@@ -588,10 +807,10 @@ class Cases extends Folders {
             closed: "Clôturé",
             suspended: "Suspendu",
         };
-        for (const c of this.cases) {
+        for (const c of this._foldersMeta) {
             const item = el("div", {
                 className: "case-item" +
-                    (c.folderName === this.activeCase?.folderName ? " active" : ""),
+                    (c.folderName === this._activeCase?.folderName ? " active" : ""),
             });
             item.dataset.folder = c.folderName;
             item.append(el("span", { className: "case-item__name", textContent: c.name }), el("span", { className: "case-item__domain", textContent: c.domain }), el("span", {
@@ -608,13 +827,13 @@ class Cases extends Folders {
     }
     // ─── Render: doc list ─────────────────────────────────────────────────────────
     renderDocList() {
-        const list = document.getElementById("doc-list");
-        if (!list || !this.activeCase)
+        const list = byID("doc-list");
+        if (!list || !this._activeCase)
             return;
         list.innerHTML = "";
-        const docs = this.docFilter === "all"
-            ? this.activeCase.documents
-            : this.activeCase.documents.filter((d) => d.kind === this.docFilter);
+        const docs = !this._docFilter
+            ? this._activeCase.documents
+            : this._activeCase.documents.filter((d) => d.kind === this._docFilter);
         if (!docs.length) {
             list.appendChild(el("div", {
                 className: "doc-empty",
@@ -639,7 +858,7 @@ class Cases extends Folders {
                 const ok = await confirm(`Retirer "${doc.name}" ?\n(Fichier OneDrive conservé, seul l'index local est supprimé.)`);
                 if (!ok)
                     return;
-                this.activeCase.documents = this.activeCase.documents.filter((d) => d.name !== doc.name);
+                this._activeCase.documents = this._activeCase.documents.filter((d) => d.name !== doc.name);
                 await this.saveMeta();
                 this.renderDocList();
                 this.updateDocCount();
@@ -656,25 +875,25 @@ class Cases extends Folders {
         }
     }
     updateDocCount() {
-        const countEl = document.getElementById("doc-count");
-        if (countEl && this.activeCase) {
-            countEl.textContent = `${this.activeCase.documents.length} pièce${this.activeCase.documents.length !== 1 ? "s" : ""}`;
+        const countEl = byID("doc-count");
+        if (countEl && this._activeCase) {
+            countEl.textContent = `${this._activeCase.documents.length} pièce${this._activeCase.documents.length !== 1 ? "s" : ""}`;
         }
     }
     // ─── Render: note bar ─────────────────────────────────────────────────────────
     renderNoteBar() {
-        const bar = document.getElementById("note-bar");
+        const bar = byID("note-bar");
         if (!bar)
             return;
         bar.innerHTML = "";
-        toggle(bar, this.caseNotes.length > 0);
-        if (!this.caseNotes.length)
+        toggle(bar, this._caseNotes.length > 0);
+        if (!this._caseNotes.length)
             return;
-        const n = this.caseNotes.length;
+        const n = this._caseNotes.length;
         bar.append(el("span", { className: "note-badge", textContent: String(n) }), el("span", {
             className: "note-bar__text",
             textContent: `note${n > 1 ? "s" : ""} active${n > 1 ? "s" : ""} · ` +
-                this.caseNotes.map((x) => x.content.slice(0, 40) + "…").join(" — "),
+                this._caseNotes.map((x) => x.content.slice(0, 40) + "…").join(" — "),
         }), (() => {
             const b = el("button", {
                 className: "note-bar__manage",
@@ -686,20 +905,20 @@ class Cases extends Folders {
     }
     // ─── Render: chat ─────────────────────────────────────────────────────────────
     renderChat() {
-        const area = document.getElementById("chat-area");
+        const area = byID("chat-area");
         if (!area)
             return;
         area.innerHTML = "";
-        if (!this.caseMessages.length) {
-            const c = this.activeCase;
+        if (!this._caseMessages.length) {
+            const c = this._activeCase;
             if (!c)
                 return;
             area.appendChild(el("div", { className: "msg msg--assistant" }, el("div", { className: "msg__label", textContent: "Lex Assistant" }), el("div", { className: "msg__bubble" }, el("p", {
-                innerHTML: `Dossier <strong>${c.name}</strong>. ${c.documents.length} pièce(s), ${this.caseNotes.length} note(s)${this.skills.length ? `, ${this.skills.length} skill(s)` : ""}.`,
+                innerHTML: `Dossier <strong>${c.name}</strong>. ${c.documents.length} pièce(s), ${this._caseNotes.length} note(s)${this.skills.length ? `, ${this.skills.length} skill(s)` : ""}.`,
             }), el("p", { textContent: "Que souhaitez-vous faire ?" }))));
             return;
         }
-        for (const msg of this.caseMessages)
+        for (const msg of this._caseMessages)
             area.appendChild(this.buildMsgEl(msg));
         area.scrollTop = area.scrollHeight;
     }
@@ -732,7 +951,7 @@ class Cases extends Folders {
                         const blob = await generateDocx({
                             title: msg.generatedDocName ?? "Document",
                             content: msg.content,
-                            caseRef: this.activeCase?.name ?? "",
+                            caseRef: this._activeCase?.name ?? "",
                         });
                         downloadBlob(blob, (msg.generatedDocName ?? "document").replace(/[^a-z0-9_\- ]/gi, "_") + ".docx");
                     }
@@ -746,20 +965,20 @@ class Cases extends Folders {
                     textContent: "☁ Sauver sur OneDrive",
                 });
                 odSave.onclick = async () => {
-                    if (!this.activeCase)
+                    if (!this._activeCase)
                         return;
                     try {
                         const blob = await generateDocx({
                             title: msg.generatedDocName ?? "Document",
                             content: msg.content,
-                            caseRef: this.activeCase.name,
+                            caseRef: this._activeCase.name,
                         });
                         const ab = await blob.arrayBuffer();
                         const fname = (msg.generatedDocName ?? "document").replace(/[^a-z0-9_\- ]/gi, "_") + ".docx";
                         const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-                        await this.writeCaseFile(this.activeCase.folderName, fname, ab, mime);
-                        if (!this.activeCase.documents.some((d) => d.name === fname)) {
-                            this.activeCase.documents.push({
+                        await this.writeCaseFile(this._activeCase.folderName, fname, ab, mime);
+                        if (!this._activeCase.documents.some((d) => d.name === fname)) {
+                            this._activeCase.documents.push({
                                 name: fname,
                                 kind: "redige",
                                 mimeType: mime,
@@ -783,7 +1002,7 @@ class Cases extends Folders {
         return wrap;
     }
     appendMsg(msg) {
-        const area = document.getElementById("chat-area");
+        const area = byID("chat-area");
         if (!area)
             return;
         area.querySelector(".empty-state")?.remove();
@@ -791,7 +1010,7 @@ class Cases extends Folders {
         area.scrollTop = area.scrollHeight;
     }
     appendTyping() {
-        const area = document.getElementById("chat-area");
+        const area = byID("chat-area");
         const typing = el("div", { className: "msg msg--assistant", id: "typing" });
         const bubble = el("div", { className: "msg__bubble" });
         bubble.append(spinnerEl(), el("span", { textContent: " Analyse en cours…" }));
@@ -802,18 +1021,18 @@ class Cases extends Folders {
     }
     // ─── Send message ─────────────────────────────────────────────────────────────
     async sendMessage() {
-        const ta = document.getElementById("user-input");
+        const ta = byID("user-input");
         if (!ta)
             return;
         const text = ta.value.trim();
-        if (!text || !this.activeCase)
+        if (!text || !this._activeCase)
             return;
         if (!getStoredKey()) {
             this.openSettingsModal();
             toast("Configurez votre clé API Claude.", "error");
             return;
         }
-        if (!this.oneDriveUser) {
+        if (!oneDrive.userName) {
             await this.connectOneDrive();
             return;
         }
@@ -826,7 +1045,7 @@ class Cases extends Folders {
             timestamp: Date.now(),
             mode: this.activeMode,
         };
-        this.caseMessages.push(userMsg);
+        this._caseMessages.push(userMsg);
         this.appendMsg(userMsg);
         if (this.activeMode === "note") {
             const note = {
@@ -835,24 +1054,24 @@ class Cases extends Folders {
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
             };
-            this.caseNotes.push(note);
+            this._caseNotes.push(note);
             await this.saveNotes();
             this.renderNoteBar();
         }
         const typing = this.appendTyping();
-        const sendBtn = document.getElementById("send-btn");
+        const sendBtn = byID("send-btn");
         if (sendBtn)
             sendBtn.disabled = true;
         try {
             const response = await callClaudeCase({
-                caseName: this.activeCase.name,
-                caseDomain: this.activeCase.domain,
-                notes: this.caseNotes,
-                docs: this.activeCase.documents,
+                caseName: this._activeCase.name,
+                caseDomain: this._activeCase.domain,
+                notes: this._caseNotes,
+                docs: this._activeCase.documents,
                 skills: this.skills,
                 mode: this.activeMode,
                 userMessage: text,
-                readFile: (fileName) => this.readCaseFile(this.activeCase.folderName, fileName),
+                readFile: (fileName) => this.readCaseFile(this._activeCase.folderName, fileName),
             });
             typing.remove();
             let docName;
@@ -872,14 +1091,14 @@ class Cases extends Folders {
                 mode: this.activeMode,
                 generatedDocName: docName,
             };
-            this.caseMessages.push(asst);
+            this._caseMessages.push(asst);
             this.appendMsg(asst);
             await this.saveConversation();
         }
         catch (err) {
             typing.remove();
             toast(err.message, "error", 6000);
-            this.caseMessages.pop();
+            this._caseMessages.pop();
         }
         finally {
             if (sendBtn)
@@ -889,7 +1108,7 @@ class Cases extends Folders {
     }
     // ─── Modals ───────────────────────────────────────────────────────────────────
     openCaseFormModal(existing) {
-        if (!this.oneDriveUser) {
+        if (!oneDrive.userName) {
             this.openSettingsModal();
             toast("Connectez OneDrive d'abord.", "error");
             return;
@@ -955,14 +1174,14 @@ class Cases extends Folders {
                 overlay.remove();
                 const c = { ...meta };
                 if (isEdit) {
-                    const idx = this.cases.findIndex((x) => x.folderName === existing.folderName);
+                    const idx = this._foldersMeta.findIndex((x) => x.folderName === existing.folderName);
                     if (idx >= 0)
-                        this.cases[idx] = c;
-                    if (this.activeCase?.folderName === existing.folderName)
-                        this.activeCase = c;
+                        this._foldersMeta[idx] = c;
+                    if (this._activeCase?.folderName === existing.folderName)
+                        this._activeCase = c;
                 }
                 else {
-                    this.cases.unshift(c);
+                    this._foldersMeta.unshift(c);
                 }
                 this.renderCaseList();
                 await this.selectCase(folder);
@@ -977,7 +1196,7 @@ class Cases extends Folders {
         nameInput.focus();
     }
     openCaseContextMenu(c, x, y) {
-        document.getElementById("context-menu")?.remove();
+        byID("context-menu")?.remove();
         const menu = el("div", { className: "context-menu", id: "context-menu" });
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
@@ -1022,9 +1241,9 @@ class Cases extends Folders {
         const ok = await confirm("Effacer tout l'historique de conversation de ce dossier ?");
         if (!ok)
             return;
-        this.caseMessages = [];
+        this._caseMessages = [];
         await this.writeConversation(folderName, []);
-        if (this.activeCase?.folderName === folderName)
+        if (this._activeCase?.folderName === folderName)
             this.renderChat();
         toast("Conversation effacée.", "info");
     }
@@ -1036,12 +1255,12 @@ class Cases extends Folders {
         for (const f of ["_meta.json", "_notes.json", "_conversation.json"]) {
             await this.deleteFilePath(`${this.casePath(folderName)}/${f}`).catch(() => { });
         }
-        this.cases = this.cases.filter((c) => c.folderName !== folderName);
+        this._foldersMeta = this._foldersMeta.filter((c) => c.folderName !== folderName);
         this.renderCaseList();
-        if (this.activeCase?.folderName === folderName) {
-            this.activeCase = null;
-            if (this.cases.length > 0)
-                await this.selectCase(this.cases[0].folderName);
+        if (this._activeCase?.folderName === folderName) {
+            this._activeCase = null;
+            if (this._foldersMeta.length > 0)
+                await this.selectCase(this._foldersMeta[0].folderName);
             else
                 this.showEmptyState();
         }
@@ -1053,21 +1272,21 @@ class Cases extends Folders {
         const refresh = () => {
             const list = qs("#notes-list", dialog);
             list.innerHTML = "";
-            if (!this.caseNotes.length) {
+            if (!this._caseNotes.length) {
                 list.appendChild(el("p", {
                     className: "note-empty",
                     textContent: 'Aucune note. Ajoutez-en une ci-dessous ou utilisez le mode "Note permanente".',
                 }));
                 return;
             }
-            for (const note of [...this.caseNotes].sort((a, b) => b.createdAt - a.createdAt)) {
+            for (const note of [...this._caseNotes].sort((a, b) => b.createdAt - a.createdAt)) {
                 const row = el("div", { className: "note-row" });
                 const del = el("button", {
                     className: "btn btn--sm btn--danger",
                     textContent: "Supprimer",
                 });
                 del.onclick = async () => {
-                    this.caseNotes = this.caseNotes.filter((n) => n.id !== note.id);
+                    this._caseNotes = this._caseNotes.filter((n) => n.id !== note.id);
                     await this.saveNotes();
                     this.renderNoteBar();
                     refresh();
@@ -1103,7 +1322,7 @@ class Cases extends Folders {
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
             };
-            this.caseNotes.push(note);
+            this._caseNotes.push(note);
             await this.saveNotes();
             this.renderNoteBar();
             refresh();
@@ -1112,7 +1331,7 @@ class Cases extends Folders {
         };
     }
     openSettingsModal() {
-        document.getElementById("settings-overlay")?.remove();
+        byID("settings-overlay")?.remove();
         const overlay = el("div", {
             className: "modal-overlay",
             id: "settings-overlay",
@@ -1120,7 +1339,6 @@ class Cases extends Folders {
         const dialog = el("div", {
             className: "modal-dialog modal-dialog--settings",
         });
-        const cfg = this.config.getConfig();
         dialog.innerHTML = `
       <h2 class="modal-title">⚙ Paramètres</h2>
       <h3 class="settings-section-title">Clé API Claude (Anthropic)</h3>
@@ -1136,17 +1354,17 @@ class Cases extends Folders {
       Type : SPA — Redirect URI : <code>${window.location.origin}</code><br>
       Permissions : <code>Files.ReadWrite</code> + <code>User.Read</code></p>
       <label class="form-label">Application (Client) ID <span class="required">*</span></label>
-      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${cfg?.clientId ?? ""}"/>
+      <input class="form-input" id="s-client" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${this.config?.clientId ?? ""}"/>
       <label class="form-label">Tenant ID</label>
-      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${cfg?.tenantId ?? "common"}"/>
+      <input class="form-input" id="s-tenant" type="text" placeholder="common" value="${this.config?.tenantId ?? "common"}"/>
       <label class="form-label">Dossier racine OneDrive</label>
-      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${cfg?.rootFolder ?? "LexAssistant"}"/>
+      <input class="form-input" id="s-root" type="text" placeholder="LexAssistant" value="${this.config?.rootFolder ?? "LexAssistant"}"/>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="btn btn--primary btn--sm" id="s-od-save">Enregistrer</button>
         <button class="btn btn--secondary btn--sm" id="s-od-init">Initialiser structure OneDrive</button>
         <button class="btn btn--secondary btn--sm" id="s-od-signout">Déconnecter</button>
       </div>
-      ${this.oneDriveUser ? `<p class="od-connected-label">✓ Connecté : ${this.oneDriveUser}</p>` : ""}
+      ${oneDrive.userName ? `<p class="od-connected-label">✓ Connecté : ${oneDrive.userName}</p>` : ""}
       <div class="modal-btns" style="margin-top:24px">
         <button class="btn btn--secondary" id="s-close">Fermer</button>
       </div>`;
@@ -1164,9 +1382,9 @@ class Cases extends Folders {
                 return;
             }
             setStoredKey(v);
-            if (this.oneDriveUser) {
+            if (oneDrive.userName) {
                 try {
-                    const existing = await this.readAppConfig() ?? {};
+                    const existing = (await this.readAppConfig()) ?? {};
                     await this.writeAppConfig({ ...existing, apiKey: v });
                     toast("Clé API enregistrée sur OneDrive.", "success");
                 }
@@ -1181,10 +1399,10 @@ class Cases extends Folders {
         qs("#s-api-clear", dialog).onclick = async () => {
             clearStoredKey();
             qs("#s-api", dialog).value = "";
-            if (this.oneDriveUser) {
+            if (oneDrive.userName) {
                 try {
-                    const existing = await this.readAppConfig() ?? {};
-                    await this.writeAppConfig({ ...existing, apiKey: '' });
+                    const existing = (await this.readAppConfig()) ?? {};
+                    await this.writeAppConfig({ ...existing, apiKey: "" });
                 }
                 catch { }
             }
@@ -1198,18 +1416,18 @@ class Cases extends Folders {
                 toast("Client ID requis.", "error");
                 return;
             }
-            this.config.setConfig({ clientId, tenantId, rootFolder });
+            oneDrive.setConfig({ clientId, tenantId, rootFolder });
             toast("Configuration OneDrive enregistrée.", "success");
         };
         qs("#s-od-init", dialog).onclick = async () => {
-            if (!this.config.isConfigured()) {
+            if (!oneDrive.isConfigured) {
                 toast("Sauvegardez la configuration d'abord.", "error");
                 return;
             }
             try {
-                if (!this.oneDriveUser) {
-                    await this.signIn();
-                    this.oneDriveUser = this.getSignedInUser();
+                if (!oneDrive.userName) {
+                    await oneDrive.signIn();
+                    oneDrive.userName = oneDrive.getSignedInUser();
                     this.updateODStatus();
                 }
                 await this.initRootStructure();
@@ -1220,8 +1438,8 @@ class Cases extends Folders {
             }
         };
         qs("#s-od-signout", dialog).onclick = async () => {
-            await this.signOut();
-            this.oneDriveUser = null;
+            await oneDrive.signOut();
+            oneDrive.userName = null;
             this.updateODStatus();
             toast("Déconnecté.", "info");
             overlay.remove();
@@ -1229,29 +1447,23 @@ class Cases extends Folders {
     }
     // ─── UI setup ─────────────────────────────────────────────────────────────────
     setupBarsBtns() {
-        const newTopBtn = document.getElementById("btn-new-item-top");
-        const settingsBtn = document.getElementById("btn-settings");
-        const odTopBtn = document.getElementById("btn-onedrive");
-        const newSideBtn = document.getElementById("btn-new-item-sidebar");
-        const notesBtn = document.getElementById("btn-notes-open");
-        const odSyncBtn = document.getElementById("btn-od-sync");
-        const fileInput = document.getElementById("file-input");
-        const uploadBtn = document.getElementById("btn-upload");
-        [newTopBtn, newSideBtn].forEach((btn) => onClick(btn, () => this.openCaseFormModal(null)));
-        onClick(settingsBtn, () => this.openSettingsModal());
-        onClick(odTopBtn, async () => {
-            if (!this.oneDriveUser)
+        const btn = (id) => byID(id), onClick = this.onClick;
+        [btn("btn-new-item-top"), btn("btn-new-item-sidebar")].forEach((btn) => onClick(btn, () => this.openCaseFormModal(null)));
+        onClick(btn("btn-settings"), () => this.openSettingsModal());
+        onClick(btn("btn-onedrive"), async () => {
+            if (!oneDrive.userName)
                 await this.connectOneDrive();
             else
                 await this.refreshCaseFromOneDrive();
         });
-        onClick(notesBtn, () => this.openNotesModal());
-        onClick(odSyncBtn, () => this.refreshCaseFromOneDrive());
-        onClick(uploadBtn, () => fileInput?.click());
+        onClick(btn("btn-notes-open"), () => this.openNotesModal());
+        onClick(btn("btn-od-sync"), () => this.refreshCaseFromOneDrive());
+        onClick(btn("btn-upload"), () => btn("file-input")?.click());
         const tabs = qsa(".doc-filter-tab");
         tabs.forEach((tab) => onClick(tab, () => {
             setActive(tabs, tab, "active");
-            this.docFilter = (tab.dataset.filter ?? "all");
+            this._docFilter = (tab.dataset.filter ??
+                null);
             this.renderDocList();
         }));
         const btns = qsa(".mode-btn[data-mode]");
@@ -1264,126 +1476,28 @@ class Cases extends Folders {
                 modification: "Indiquez le document à modifier et les changements souhaités…",
                 note: "Rédigez une correction → sauvegardée dans _notes.json…",
             };
-            const ta = document.getElementById("user-input");
+            const ta = byID("user-input");
             if (!ta)
                 return;
             ta.placeholder = hints[this.activeMode];
         }));
-        const summBtn = document.getElementById("btn-case-summary");
+        const summBtn = btn("btn-case-summary");
         onClick(summBtn, async () => {
-            const ta = document.getElementById("user-input");
+            const ta = btn("user-input");
             if (!ta)
                 return;
             ta.value =
                 "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
             await this.sendMessage();
         });
-        function onClick(btn, action) {
-            if (!btn)
-                return;
-            btn.onclick = () => action();
-        }
-    }
-    setupTopbar() {
-        const newBtn = document.getElementById("btn-new-item-top");
-        const setBtn = document.getElementById("btn-settings");
-        const odBtn = document.getElementById("btn-onedrive");
-        if (newBtn)
-            newBtn.onclick = () => this.openCaseFormModal(null);
-        if (setBtn)
-            setBtn.onclick = () => this.openSettingsModal();
-        if (odBtn)
-            odBtn.onclick = async () => {
-                if (!this.oneDriveUser)
-                    await this.connectOneDrive();
-                else
-                    await this.refreshCaseFromOneDrive();
-            };
-    }
-    setupSidebar() {
-        const newSideBtn = document.getElementById("btn-new-item-sidebar");
-        const notesBtn = document.getElementById("btn-notes-open");
-        const odSyncBtn = document.getElementById("btn-od-sync");
-        const fileInput = document.getElementById("file-input");
-        const uploadBtn = document.getElementById("btn-upload");
-        if (newSideBtn)
-            newSideBtn.onclick = () => this.openCaseFormModal(null);
-        if (notesBtn)
-            notesBtn.onclick = () => this.openNotesModal();
-        if (odSyncBtn)
-            odSyncBtn.onclick = () => this.refreshCaseFromOneDrive();
-        if (uploadBtn && fileInput)
-            uploadBtn.onclick = () => fileInput.click();
-        const tabs = qsa(".doc-filter-tab");
-        for (const tab of tabs) {
-            tab.onclick = () => {
-                setActive(tabs, tab, "active");
-                this.docFilter = (tab.dataset.filter ?? "all");
-                this.renderDocList();
-            };
-        }
-        if (fileInput) {
-            fileInput.onchange = async () => {
-                if (!this.activeCase || !fileInput.files?.length)
-                    return;
-                if (!this.oneDriveUser) {
-                    await this.connectOneDrive();
-                    return;
-                }
-                for (const file of Array.from(fileInput.files)) {
-                    try {
-                        const ab = await file.arrayBuffer();
-                        const meta = makeCaseDocMeta(file);
-                        await this.writeCaseFile(this.activeCase.folderName, file.name, ab, meta.mimeType);
-                        if (!this.activeCase.documents.some((d) => d.name === file.name))
-                            this.activeCase.documents.push(meta);
-                        toast(`"${file.name}" uploadé sur OneDrive.`, "success", 2000);
-                    }
-                    catch (err) {
-                        toast(`Erreur : ${err.message}`, "error");
-                    }
-                }
-                fileInput.value = "";
-                await this.saveMeta();
-                this.renderDocList();
-                this.updateDocCount();
-            };
-        }
-    }
-    setupModeBar() {
-        const btns = qsa(".mode-btn[data-mode]");
-        for (const btn of btns) {
-            btn.onclick = () => {
-                setActive(btns, btn, "active");
-                this.activeMode = btn.dataset.mode;
-                const hints = {
-                    analyse: "Posez une question, demandez une analyse du dossier…",
-                    redaction: "Précisez l'acte à rédiger (courrier, assignation, conclusions, contrat…)",
-                    modification: "Indiquez le document à modifier et les changements souhaités…",
-                    note: "Rédigez une correction → sauvegardée dans _notes.json…",
-                };
-                const ta = document.getElementById("user-input");
-                if (ta)
-                    ta.placeholder = hints[this.activeMode];
-            };
-        }
-        const summBtn = document.getElementById("btn-case-summary");
-        if (summBtn)
-            summBtn.onclick = async () => {
-                const ta = document.getElementById("user-input");
-                if (ta)
-                    ta.value =
-                        "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
-                await this.sendMessage();
-            };
     }
     autoResize(ta) {
         ta.style.height = "auto";
         ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
     }
     setupInputArea() {
-        const ta = document.getElementById("user-input");
-        const sendBtn = document.getElementById("send-btn");
+        const ta = byID("user-input");
+        const sendBtn = byID("send-btn");
         if (!ta || !sendBtn)
             return;
         ta.addEventListener("input", () => this.autoResize(ta));
@@ -1403,7 +1517,7 @@ class Cases extends Folders {
         });
     }
     showEmptyState() {
-        const area = document.getElementById("chat-area");
+        const area = byID("chat-area");
         if (!area)
             return;
         area.innerHTML = "";
@@ -1419,7 +1533,7 @@ class Cases extends Folders {
         })()));
     }
     showNotConnected() {
-        const area = document.getElementById("chat-area");
+        const area = byID("chat-area");
         if (!area)
             return;
         area.innerHTML = "";
@@ -1442,7 +1556,8 @@ class Cases extends Folders {
     }
 }
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
-export class Library extends Cases {
+export class Library extends Scenario {
+    mainFolder = FOLDER_LIBRARY;
     activeDomain = "all";
     domainDocs = new Map();
     libMessages = [];
@@ -1464,7 +1579,7 @@ export class Library extends Cases {
     // ─── Path helpers ─────────────────────────────────────────────────────────────
     libDomainFolder(subFolder) {
         const cap = subFolder.charAt(0).toUpperCase() + subFolder.slice(1);
-        return `${this.rootFolder}/${FOLDER_LIBRARY}/${cap}`;
+        return `${this._rootFolder}/${FOLDER_LIBRARY}/${cap}`;
     }
     libMetaPath(subFolder) {
         return `${this.libDomainFolder(subFolder)}/_meta.json`;
@@ -1488,7 +1603,7 @@ export class Library extends Cases {
     }
     getConvPath() {
         return this.activeDomain === "all"
-            ? `${this.rootFolder}/${FOLDER_LIBRARY}/_conversation.json`
+            ? `${this._rootFolder}/${FOLDER_LIBRARY}/_conversation.json`
             : `${this.libDomainFolder(this.activeDomain)}/_conversation.json`;
     }
     async listLibFiles(domain) {
@@ -1522,6 +1637,8 @@ export class Library extends Cases {
     }
     // ─── Sync from OneDrive ───────────────────────────────────────────────────────
     async syncDomainFromOneDrive(domain) {
+        if (!oneDrive.userName)
+            await this.connectOneDrive();
         const items = await this.listLibFiles(domain);
         const existing = await this.loadDomainMeta(domain);
         let added = 0;
@@ -1543,6 +1660,43 @@ export class Library extends Cases {
         if (added > 0)
             await this.saveDomainMeta(domain, existing);
         return added;
+    }
+    setupBarsBtns() {
+        const btn = (id) => byID(id), onClick = this.onClick;
+        [btn("btn-new-item-top"), btn("btn-new-item-sidebar")].forEach((btn) => onClick(btn, () => this.loadAllSubFolders()));
+        onClick(btn("btn-settings"), () => this.openSettingsModal());
+        onClick(btn("btn-onedrive"), async () => await this.syncCurrentDomain());
+        onClick(btn("btn-od-sync"), async () => await this.syncCurrentDomain());
+        onClick(btn("btn-upload"), () => btn("file-input")?.click());
+        const btns = qsa(".mode-btn[data-mode]");
+        const ta = btn("user-input");
+        const hints = {
+            analyse: "Posez une question, demandez une analyse du dossier…",
+            redaction: "Précisez l'acte à rédiger (courrier, assignation, conclusions, contrat…)",
+            modification: "Indiquez le document à modifier et les changements souhaités…",
+            note: "Rédigez une correction → sauvegardée dans _notes.json…",
+        };
+        btns.forEach((btn) => onClick(btn, () => {
+            setActive(btns, btn, "active");
+            this.activeMode = btn.dataset.mode;
+            if (!ta)
+                return;
+            ta.placeholder = hints[this.activeMode];
+        }));
+        onClick(btn("btn-case-summary"), async () => {
+            const ta = btn("user-input");
+            if (!ta)
+                return;
+            ta.value =
+                "Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d'attention prioritaires.";
+            await this.sendMessage();
+        });
+    }
+    sendMessage() {
+        //!Missing
+    }
+    loadAllSubFolders() {
+        //!Missing
     }
     // ─── Boot ─────────────────────────────────────────────────────────────────────
     async bootLib(container) {
@@ -1596,7 +1750,7 @@ export class Library extends Cases {
             textContent: "⟳ Sync OneDrive",
             id: "btn-lib-sync",
         });
-        synBtn.onclick = () => this.syncCurrentDomain();
+        synBtn.onclick = async () => await this.syncCurrentDomain();
         acts.append(fi, upBtn, synBtn);
         sidebar.appendChild(acts);
         const main = el("div", { className: "lib-main" });
@@ -1645,7 +1799,7 @@ export class Library extends Cases {
     }
     // ─── Domain navigation ────────────────────────────────────────────────────────
     renderDomainPills() {
-        const container = document.getElementById("lib-domain-pills");
+        const container = byID("lib-domain-pills");
         if (!container)
             return;
         container.innerHTML = "";
@@ -1678,14 +1832,14 @@ export class Library extends Cases {
         this.renderDomainPills();
         this.renderLibDocList();
         this.renderLibChat();
-        const lbl = document.getElementById("lib-active-domain");
+        const lbl = byID("lib-active-domain");
         if (lbl)
             lbl.textContent = this.domainLabel(domain);
         this.updateQuickPrompts();
     }
     // ─── Render: lib doc list ─────────────────────────────────────────────────────
     renderLibDocList() {
-        const list = document.getElementById("lib-doc-list");
+        const list = byID("lib-doc-list");
         if (!list)
             return;
         list.innerHTML = "";
@@ -1743,7 +1897,7 @@ export class Library extends Cases {
     }
     // ─── Render: lib chat ─────────────────────────────────────────────────────────
     renderLibChat() {
-        const area = document.getElementById("lib-chat-area");
+        const area = byID("lib-chat-area");
         if (!area)
             return;
         area.innerHTML = "";
@@ -1781,7 +1935,7 @@ export class Library extends Cases {
         return wrap;
     }
     appendLibMsg(msg) {
-        const area = document.getElementById("lib-chat-area");
+        const area = byID("lib-chat-area");
         if (!area)
             return;
         area.querySelector(".empty-state")?.remove();
@@ -1789,7 +1943,7 @@ export class Library extends Cases {
         area.scrollTop = area.scrollHeight;
     }
     appendLibTyping() {
-        const area = document.getElementById("lib-chat-area");
+        const area = byID("lib-chat-area");
         const typing = el("div", {
             className: "msg msg--assistant",
             id: "lib-typing",
@@ -1812,8 +1966,8 @@ export class Library extends Cases {
     }
     // ─── Send lib message ─────────────────────────────────────────────────────────
     async sendLibMessage() {
-        const ta = document.getElementById("lib-input");
-        const sendBtn = document.getElementById("lib-send-btn");
+        const ta = byID("lib-input");
+        const sendBtn = byID("lib-send-btn");
         if (!ta || !sendBtn)
             return;
         const text = ta.value.trim();
@@ -1845,9 +1999,7 @@ export class Library extends Cases {
         this.appendLibMsg(userMsg);
         const typing = this.appendLibTyping();
         sendBtn.disabled = true;
-        const history = this.libMessages
-            .slice(-21, -1)
-            .map((m) => ({
+        const history = this.libMessages.slice(-21, -1).map((m) => ({
             role: m.role,
             content: m.content,
         }));
@@ -1884,7 +2036,7 @@ export class Library extends Cases {
     }
     // ─── Sync current domain ──────────────────────────────────────────────────────
     async syncCurrentDomain() {
-        const btn = document.getElementById("btn-lib-sync");
+        const btn = byID("btn-lib-sync");
         if (btn) {
             btn.disabled = true;
             btn.textContent = "⟳ Sync…";
@@ -1914,7 +2066,7 @@ export class Library extends Cases {
     }
     // ─── Quick prompts ────────────────────────────────────────────────────────────
     updateQuickPrompts() {
-        const area = document.getElementById("lib-quick-prompts");
+        const area = byID("lib-quick-prompts");
         if (!area)
             return;
         area.innerHTML = "";
@@ -1964,7 +2116,7 @@ export class Library extends Cases {
         for (const p of list) {
             const btn = el("button", { className: "quick-btn", textContent: p });
             btn.onclick = () => {
-                const ta = document.getElementById("lib-input");
+                const ta = byID("lib-input");
                 if (ta) {
                     ta.value = p;
                     ta.focus();
@@ -1974,8 +2126,8 @@ export class Library extends Cases {
         }
     }
     setupLibInput() {
-        const ta = document.getElementById("lib-input");
-        const sendBtn = document.getElementById("lib-send-btn");
+        const ta = byID("lib-input");
+        const sendBtn = byID("lib-send-btn");
         if (!ta || !sendBtn)
             return;
         ta.addEventListener("input", () => {
@@ -1992,7 +2144,7 @@ export class Library extends Cases {
         this.updateQuickPrompts();
     }
     setupLibUpload() {
-        const fi = document.getElementById("lib-file-input");
+        const fi = byID("lib-file-input");
         if (!fi)
             return;
         fi.onchange = async () => {
@@ -2027,8 +2179,8 @@ export class Library extends Cases {
         };
     }
     updateLibSkillIndicator() {
-        const badge = document.getElementById("lib-skill-badge");
-        const top = document.getElementById("lib-skills-top");
+        const badge = byID("lib-skill-badge");
+        const top = byID("lib-skills-top");
         const n = this.skills.length;
         if (badge) {
             badge.textContent = n > 0 ? `${n} skill${n > 1 ? "s" : ""}` : "";

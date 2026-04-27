@@ -24,7 +24,7 @@ export function isSupported(name: string): boolean {
 
 export function guessKind(name: string): DocKind {
   const l = name.toLowerCase();
-  if (/jurisp|arrêt|arret|décision|cass|conseil.d.état/.test(l)) return 'jurisprudence';
+  if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l)) return 'jurisprudence';
   if (/doctrine|article|revue|doctr/.test(l)) return 'doctrine';
   return 'piece';
 }
@@ -49,15 +49,6 @@ export function makeLibDocMeta(file: File): LibDocumentMeta {
   };
 }
 
-export function toBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let bin = '';
-  const chunk = 8192;
-  for (let i = 0; i < bytes.byteLength; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
 
 export function formatSize(bytes: number): string {
   if (bytes < 1024)        return `${bytes} o`;

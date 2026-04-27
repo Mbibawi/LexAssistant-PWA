@@ -8,83 +8,140 @@
  * A single Library instance is created at boot and reused for both
  * scenarios (Library extends Cases, so it carries all state).
  */
-import { Library } from './modules/onedrive.js';
+import { Cases, Library, OneDriveAuth } from "./modules/onedrive.js";
 import { el, toggle } from './modules/ui.js';
-// ─── Single shared instance ───────────────────────────────────────────────────
-const app = new Library();
-let activeScenario = 'selector';
+// ─── Initiale single shared instances ───────────────────────────────────────────────────
+export const oneDrive = new OneDriveAuth();
+const cases = new Cases();
+const library = new Library();
+// ─── Active scenario ──────────────────────────────────────────────────────────
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
     buildShell();
-    showSelector();
-    // Try silent OneDrive sign-in
-    if (app.config.isConfigured()) {
-        const signed = await app.isSignedIn();
-        if (signed) {
-            app.oneDriveUser = app.getSignedInUser();
-        }
-    }
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => { });
     }
 }
 // ─── Shell (persistent topbar + content area) ─────────────────────────────────
 function buildShell() {
-    document.body.innerHTML = '';
-    // Topbar
-    const topbar = el('header', { id: 'topbar' });
-    topbar.innerHTML = `
-    <div class="topbar__left">
-      <span class="topbar__logo">⚖</span>
-      <span class="topbar__brand">Lex Assistant</span>
-      <div id="topbar-breadcrumb" class="topbar__breadcrumb"></div>
-    </div>
-    <div class="topbar__right">
-      <span id="onedrive-status" class="od-status od-status--disconnected">☁ OneDrive</span>
-      <span id="skills-badge" class="skills-badge" style="display:none"></span>
-      <button id="btn-home"     class="btn btn--ghost btn--sm" style="display:none">⌂ Accueil</button>
-      <button id="btn-switch"   class="btn btn--ghost btn--sm" style="display:none"></button>
-      <button id="btn-onedrive" class="btn btn--ghost btn--sm">☁ Connexion</button>
-      <button id="btn-settings" class="btn btn--ghost btn--sm">⚙</button>
-    </div>`;
+    document.body.innerHTML = "";
+    // Topbar Left
+    const logo = el("span", { className: "topbar__logo", innerText: "⚖" });
+    const topBrand = el("span", {
+        className: "topbar__brand",
+        innerText: "Lex Assistant",
+    });
+    const bread = el("div", {
+        id: "topbar-breadcrumb",
+        className: "topbar__breadcrumb",
+    });
+    const topLeft = el("div", {
+        className: "topbar__Left",
+    });
+    [logo, topBrand, bread].forEach((e) => topLeft.appendChild(e));
+    // TopBar Right
+    const odStatus = el("span", {
+        id: "onedrive-status",
+        className: "od-status od-status--disconnected",
+        innerText: "☁ OneDrive",
+    });
+    const skills = el("span", {
+        id: "skills-badge",
+        className: "skills-badge",
+        innerText: "",
+    });
+    skills.style.display = "none";
+    const home = el("button", {
+        id: "btn-home",
+        className: "btn btn--ghost btn--sm",
+        innerText: "⌂ Accueil",
+    });
+    home.style.display = "none";
+    const switchBtn = el("button", {
+        id: "btn-switch",
+        className: "btn btn--ghost btn--sm",
+    });
+    switchBtn.style.display = "none";
+    const connection = el("button", {
+        id: "btn-onedrive",
+        className: "btn btn--ghost btn--sm",
+        innerText: "☁ Connexion",
+    });
+    const settings = el("button", {
+        id: "btn-settings",
+        className: "btn btn--ghost btn--sm",
+        innerText: "⚙",
+    });
+    const topRight = el("div", {
+        className: "topbar__Right",
+    });
+    [odStatus, skills, home, switchBtn, connection, settings].forEach((e) => topRight.appendChild(e));
     // Dynamic topbar slots used by Cases/Library
-    topbar.innerHTML += `
-    <div id="topbar-case-info" class="topbar__case-info" style="display:none">
-      <span id="topbar-case-name"   class="topbar__case"></span>
-      <span id="topbar-case-domain" class="topbar__domain"></span>
-    </div>`;
+    const caseInfo = el("div", {
+        id: "topbar-case-info",
+        className: "topbar__case-info",
+    });
+    caseInfo.style.display = "none";
+    const caseName = el("span", {
+        id: "topbar-case-name",
+        className: "topbar__case",
+    });
+    const caseDomain = el("span", {
+        id: "topbar-case-domain",
+        className: "topbar__domain",
+    });
+    [caseName, caseDomain].forEach((el) => caseInfo.appendChild(el));
+    const header = el("header", { id: "topbar" });
+    [topLeft, topRight, caseInfo].forEach((el) => header.appendChild(el));
     // Content
-    const content = el('div', { id: 'app-content' });
+    const content = el("div", { id: "app-content" });
     // Toast container
-    const toasts = el('div', { id: 'toast-container' });
-    document.body.append(topbar, content, toasts);
+    const toasts = el("div", { id: "toast-container" });
+    document.body.append(header, content, toasts);
     // Wire persistent topbar buttons
-    document.getElementById('btn-settings').onclick = () => app.openSettingsModal();
-    document.getElementById('btn-onedrive').onclick = () => handleOneDriveBtn();
-    document.getElementById('btn-home').onclick = () => { showSelector(); };
+    home.onclick = () => showSelector(settings, content, logo.innerText, topBrand.innerText);
+    home.click(); //We show the selector ui once the shell is built
 }
 // ─── Scenario selector ────────────────────────────────────────────────────────
-function showSelector() {
-    activeScenario = 'selector';
-    updateTopbarForSelector();
-    const content = document.getElementById('app-content');
-    content.innerHTML = '';
-    content.className = 'selector-view';
-    content.appendChild(el('div', { className: 'selector-container' }, el('div', { className: 'selector-header' }, el('div', { className: 'selector-logo', textContent: '⚖' }), el('h1', { className: 'selector-title', textContent: 'Lex Assistant' }), el('p', { className: 'selector-subtitle', textContent: 'Choisissez votre espace de travail' })), el('div', { className: 'selector-cards' }, buildScenarioCard({
-        id: 'dossiers',
-        icon: '📁',
-        title: 'Dossiers',
-        description: 'Gérez vos affaires, analysez les pièces, rédigez des actes, conservez vos corrections.',
-        features: ['Pièces PDF, Word, Excel, PowerPoint', 'Notes permanentes (_notes.json)', 'Historique de conversation', 'Génération et sauvegarde .docx'],
-        action: () => mountDossiers(),
-    }), buildScenarioCard({
-        id: 'bibliotheque',
-        icon: '📚',
-        title: 'Bibliothèque juridique',
-        description: 'Interrogez votre base documentaire thématique — jurisprudence, doctrine, textes.',
-        features: ['8 domaines : Commercial, Fiscal, Social…', 'Synchronisation OneDrive automatique', 'Conversations multi-tours par domaine', 'Recherche et analyse comparative'],
-        action: () => mountBibliotheque(),
-    })), buildSettingsShortcut()));
+function showSelector(settings, content, logo, title) {
+    content.innerHTML = "";
+    content.className = "selector-view";
+    const selectorContainer = el("div", { className: "selector-container" }), selectorHeader = el("div", { className: "selector-header" }), selectorCards = el("div", { className: "selector-cards" });
+    [selectorHeader, selectorCards].forEach((el) => selectorContainer.appendChild(el));
+    content.appendChild(selectorContainer);
+    const { configBtn, syncBtn } = buildSettingsShortcut(selectorContainer, cases.userName());
+    const sLogo = el("div", { className: "selector-logo", textContent: logo }), sTitle = el("h1", { className: "selector-title", textContent: title }), subTitle = el("p", {
+        className: "selector-subtitle",
+        textContent: "Choisissez votre espace de travail",
+    });
+    [sLogo, sTitle, subTitle].forEach((el) => selectorHeader.appendChild(el));
+    const dossiers = buildScenarioCard({
+        id: "dossiers",
+        icon: "📁",
+        title: "Dossiers",
+        description: "Gérez vos affaires, analysez les pièces, rédigez des actes, conservez vos corrections.",
+        features: [
+            "Pièces PDF, Word, Excel, PowerPoint",
+            "Notes permanentes (_notes.json)",
+            "Historique de conversation",
+            "Génération et sauvegarde .docx",
+        ],
+        action: () => mountDossiers(configBtn, syncBtn),
+    });
+    const library = buildScenarioCard({
+        id: "bibliotheque",
+        icon: "📚",
+        title: "Bibliothèque juridique",
+        description: "Interrogez votre base documentaire thématique — jurisprudence, doctrine, textes.",
+        features: [
+            "8 domaines : Commercial, Fiscal, Social…",
+            "Synchronisation OneDrive automatique",
+            "Conversations multi-tours par domaine",
+            "Recherche et analyse comparative",
+        ],
+        action: () => mountBibliotheque(configBtn, syncBtn),
+    });
+    [dossiers, library].forEach((el) => selectorCards.appendChild(el));
 }
 function buildScenarioCard(opts) {
     const card = el('div', { className: 'scenario-card', id: `card-${opts.id}` });
@@ -99,91 +156,91 @@ function buildScenarioCard(opts) {
     card.append(iconEl, titleEl, descEl, featList, btn);
     return card;
 }
-function buildSettingsShortcut() {
-    const row = el('div', { className: 'selector-settings-row' });
-    const odStatus = app.oneDriveUser
-        ? el('span', { className: 'selector-od-status selector-od-status--connected', textContent: `☁ ${app.oneDriveUser}` })
-        : el('span', { className: 'selector-od-status selector-od-status--disconnected', textContent: '☁ OneDrive non connecté' });
-    const configBtn = el('button', { className: 'btn btn--secondary btn--sm', textContent: '⚙ Paramètres' });
-    configBtn.onclick = () => app.openSettingsModal();
-    const connectBtn = el('button', { className: 'btn btn--primary btn--sm', textContent: app.oneDriveUser ? '☁ Synchroniser' : '☁ Connecter OneDrive' });
-    connectBtn.onclick = () => handleOneDriveBtn();
-    row.append(odStatus, configBtn, connectBtn);
-    return row;
+function buildSettingsShortcut(container, userName) {
+    const row = el("div", { className: "selector-settings-row" });
+    const odStatus = userName
+        ? el("span", {
+            className: "selector-od-status selector-od-status--connected",
+            textContent: `☁ ${userName}`,
+        })
+        : el("span", {
+            className: "selector-od-status selector-od-status--disconnected",
+            textContent: "☁ OneDrive non connecté",
+        });
+    const configBtn = el("button", {
+        className: "btn btn--secondary btn--sm",
+        textContent: "⚙ Paramètres",
+    });
+    const syncBtn = el("button", {
+        className: "btn btn--primary btn--sm",
+        textContent: userName ? "☁ Synchroniser" : "☁ Connecter OneDrive",
+    });
+    row.append(odStatus, configBtn, syncBtn);
+    container.appendChild(row);
+    return { configBtn, syncBtn };
 }
 // ─── Mount Dossiers ───────────────────────────────────────────────────────────
-async function mountDossiers() {
-    activeScenario = "dossiers";
-    updateTopBar("Dossiers", "📚 Bibliothèque", () => mountBibliotheque());
+async function mountDossiers(configBtn, syncBtn) {
+    await updateTopbarForSelector(cases);
+    configBtn.onclick = () => cases.openSettingsModal();
+    syncBtn.onclick = async () => await cases.refreshCaseFromOneDrive();
+    updateTopBar("Dossiers", "📚 Bibliothèque", () => mountBibliotheque(configBtn, syncBtn));
     const content = document.getElementById("app-content");
     content.innerHTML = "";
     content.className = "dossiers-view";
     content.innerHTML = buildDossiersHTML();
     // Wire all scenario-specific UI
-    app.setupBarsBtns();
-    app.setupInputArea();
-    app.updateODStatus();
-    if (app.oneDriveUser) {
-        await app.loadAllCases();
-        await app.fetchSkills();
-    }
-    else if (app.config.isConfigured()) {
-        const signed = await app.isSignedIn();
-        if (signed) {
-            app.oneDriveUser = app.getSignedInUser();
-            app.updateODStatus();
-            await app.loadAllCases();
-            await app.fetchSkills();
-        }
-        else {
-            app.showNotConnected();
-        }
+    cases.setupBarsBtns();
+    cases.setupInputArea();
+    cases.updateODStatus();
+    if (cases.userName()) {
+        await cases.loadAllSubFolders();
+        await cases.fetchSkills();
     }
     else {
-        app.showNotConnected();
+        cases.showNotConnected();
     }
 }
 // ─── Mount Bibliothèque ───────────────────────────────────────────────────────
-async function mountBibliotheque() {
-    activeScenario = 'bibliotheque';
-    updateTopBar("Bibliothèque", "📁 Dossiers", () => mountDossiers());
-    const content = document.getElementById('app-content');
-    content.innerHTML = '';
-    content.className = 'bibliotheque-view';
+async function mountBibliotheque(configBtn, connectBtn) {
+    await updateTopbarForSelector(library);
+    configBtn.onclick = () => library.openSettingsModal();
+    connectBtn.onclick = async () => await library.syncCurrentDomain();
+    updateTopBar("Bibliothèque", "📁 Dossiers", () => mountDossiers(configBtn, connectBtn));
+    library.setupBarsBtns();
+    const content = document.getElementById("app-content");
+    content.innerHTML = "";
+    content.className = "bibliotheque-view";
     // Library builds its own UI into the container
-    await app.bootLib(content);
+    await library.bootLib(content);
     // Pass already-loaded skills
-    app.updateLibSkillIndicator();
-    app.updateODStatus();
+    library.updateODStatus();
+    if (library.userName()) {
+        await library.loadAllSubFolders();
+        await library.fetchSkills();
+    }
+    else {
+        library.showNotConnected();
+    }
 }
 // ─── Topbar state per scenario ────────────────────────────────────────────────
-function updateTopbarForSelector() {
-    const homeBtn = document.getElementById('btn-home');
-    const switchBtn = document.getElementById('btn-switch');
-    const odBtn = document.getElementById('btn-onedrive');
-    const caseInfo = document.getElementById('topbar-case-info');
-    const breadcrumb = document.getElementById('topbar-breadcrumb');
+async function updateTopbarForSelector(app) {
+    const homeBtn = document.getElementById("btn-home");
+    const switchBtn = document.getElementById("btn-switch");
+    const odBtn = document.getElementById("btn-onedrive");
+    const caseInfo = document.getElementById("topbar-case-info");
+    const breadcrumb = document.getElementById("topbar-breadcrumb");
     toggle(homeBtn, false);
     toggle(switchBtn, false);
     toggle(caseInfo, false);
     if (breadcrumb)
-        breadcrumb.textContent = '';
-    if (odBtn)
-        odBtn.textContent = app.oneDriveUser ? '☁ ' + app.oneDriveUser : '☁ Connexion';
-}
-function _accountupdateTopbarForDossiers() {
-    const homeBtn = document.getElementById("btn-home");
-    const switchBtn = document.getElementById("btn-switch");
-    const newBtn = document.getElementById("btn-new-case-top");
-    const breadcrumb = document.getElementById("topbar-breadcrumb");
-    toggle(homeBtn, true);
-    toggle(switchBtn, true);
-    if (switchBtn) {
-        switchBtn.textContent = "📚 Bibliothèque";
-        switchBtn.onclick = () => mountBibliotheque();
+        breadcrumb.textContent = "";
+    // Try silent OneDrive sign-in
+    if (oneDrive.isConfigured) {
+        const userName = await oneDrive.isSignedIn();
+        if (odBtn)
+            odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
     }
-    if (breadcrumb)
-        breadcrumb.textContent = "Dossiers";
 }
 function updateTopBar(label, switchTo, action) {
     const homeBtn = document.getElementById("btn-home");
@@ -199,20 +256,6 @@ function updateTopBar(label, switchTo, action) {
         breadcrumb.textContent = label;
 }
 // ─── OneDrive button handler ──────────────────────────────────────────────────
-async function handleOneDriveBtn() {
-    if (!app.oneDriveUser) {
-        await app.connectOneDrive();
-        // Refresh selector if still on it
-        if (activeScenario === 'selector')
-            showSelector();
-    }
-    else {
-        if (activeScenario === 'dossiers')
-            await app.refreshCaseFromOneDrive();
-        else if (activeScenario === 'bibliotheque')
-            await app.syncCurrentDomain();
-    }
-}
 // ─── Dossiers HTML template ───────────────────────────────────────────────────
 function buildDossiersHTML() {
     return `

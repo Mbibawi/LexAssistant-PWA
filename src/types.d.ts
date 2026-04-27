@@ -2,6 +2,7 @@
 
 type DocKind = 'piece' | 'jurisprudence' | 'doctrine' | 'redige';
 
+
 type WorkMode = 'analyse' | 'redaction' | 'modification' | 'note';
 
 type ChatRole = 'user' | 'assistant';
@@ -19,6 +20,7 @@ type LibDomain =
     getAllAccounts(): MsalAccount[];
     handleRedirectPromise(): Promise<null>;
   }
+
 type MsalAccount = { homeAccountId: string; username: string; name?: string }
   
   declare const msal : {
@@ -35,6 +37,30 @@ type MsalAccount = { homeAccountId: string; username: string; name?: string }
   }
 
 // ─── _meta.json — stored in each Affaires/<case>/ folder ─────────────────────
+
+type CaseCallOpts = {
+  caseName: string;
+  caseDomain: string;
+  notes: PermanentNote[];
+  docs: CaseDocumentMeta[];
+  skills: { name: string; content: string }[];
+  mode: WorkMode;
+  userMessage: string;
+  knowledgeBase: string | undefined;
+  /** Caller provides file reader scoped to the case folder */
+  readFile: (folderName, fileName: string) => Promise<ArrayBuffer>;
+};
+
+type LibCallOpts = {
+  domain: LibDomain | "all";
+  docs: LibDocumentMeta[];
+  skills: { name: string; content: string }[];
+  userMessage: string;
+  history: { role: ChatRole; content: string }[];
+  knowledgeBase: string | undefined;
+  /** Caller provides file reader scoped to the library domain folder */
+  readFile: (folderName: LibDomain | string, fileName: string) => Promise<ArrayBuffer>;
+};
 
 type CaseMeta = {
   name: string;                // Display name
@@ -75,27 +101,27 @@ type ConversationFile = {
 }
 
 type ChatMessage = {
-  id: string;
+  id?: string;
   role: ChatRole;
-  content: string;
-  timestamp: number;
-  mode: WorkMode;
+  content: string | ContentPart[];
+  timestamp?: number;
+  mode?: WorkMode;
   generatedDocName?: string;
-}
+};
 
 // ─── In-memory case object (assembled from CaseMeta + folder listing) ─────────
 
-type LexCase = {
-  folderName: string;          // primary key — the OneDrive folder name
+type FolderMeta = {
+  folderName: string; // primary key — the OneDrive folder name
   name: string;
   domain: string;
-  status: 'active' | 'closed' | 'suspended';
+  status: "active" | "closed" | "suspended";
   createdAt: number;
   updatedAt: number;
   documents: CaseDocumentMeta[];
-}
+};
 
-// ─── Module 2 — Legal Library ─────────────────────────────────────────────────
+//  Legal Library ─────────────────────────────────────────────────
 
 type LibDocumentMeta = {
   name: string;
@@ -138,19 +164,53 @@ type OneDriveConfig = {
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-type AnthropicContentBlock = {
-  type: 'text';
+type ChatBlock = {
+  type: "text";
   text: string;
-}
+};
 
-type AnthropicRequest = {
+type MessageSystem = {
+  type: "text";
+  text: string;
+  cache_control?: { type: string; ttl: string };
+}[];
+
+type ClaudeMessages = {
   model: string;
   max_tokens: number;
-  system: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | AnthropicContentBlock[] }>;
+  system?: {
+    type: "text";
+    text: string;
+    cache_control?: { type: string; ttl: string };
+  }[];
+  messages: ChatMessage[];
+};
+
+type ClaudeResponse = {
+  content: ChatBlock[];
+  stop_reason: string;
+};
+
+type ContentPart =
+  | ChatBlock
+  | {
+    type: "document";
+    source: { type: "base64"; media_type: string; data: string };
+    title?: string;
+  };
+
+type ElAttributes = {
+  id?: string;
+  type?: string;
+  className?: string;
+  innerHTML?: string;
+  innerText?: string;
+  textContent?: string;
+  // This allows you to pass { display: "none" } without errors
+  style?: Partial<CSSStyleDeclaration>;
+  [key: string]: any; // Allows other attributes like data-props
 }
 
-type AnthropicResponse = {
-  content: AnthropicContentBlock[];
-  stop_reason: string;
+type ids = {
+  chat: "user-input"
 }

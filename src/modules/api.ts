@@ -1,12 +1,4 @@
-import { toBase64 } from './ingest.js';
-
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = "claude-sonnet-4-6";
-let _apiKey = '';
-
-export function getStoredKey(): string { return _apiKey; }
-export function setStoredKey(k: string): void { _apiKey = k.trim(); }
-export function clearStoredKey(): void { _apiKey = ''; }
+import { oneDrive } from '../main.js';
 
 // ─── MIME types Claude accepts natively ──────────────────────────────────────
 
@@ -18,9 +10,7 @@ const NATIVE_MIMES = new Set([
   'text/plain', 'text/html', 'text/markdown',
 ]);
 
-type ContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title?: string };
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function docPart(name: string, mime: string, base64: string): ContentPart {
   if (NATIVE_MIMES.has(mime)) {
@@ -29,154 +19,378 @@ function docPart(name: string, mime: string, base64: string): ContentPart {
   return { type: 'text', text: `[Fichier joint : ${name} — format non lu nativement]` };
 }
 
+/** Convert any string to base64 (UTF-8 safe) */
+function strToBase64(text: string): string {
+  return btoa(encodeURIComponent(text));
+}
+
+/** Decode a base64 string back to UTF-8 text */
+export function base64ToStr(b64: string): string {
+  return decodeURIComponent(atob(b64));
+}
+
+/** Fingerprint a document for duplicate detection */
+function docFingerprint(doc: CaseDocumentMeta | LibDocumentMeta): string {
+  return [doc.name, doc.mimeType, doc.sizeBytes, doc.addedAt].join('|');
+}
+
 // ─── System prompts ───────────────────────────────────────────────────────────
+
+function permanentInstructions(): string {
+  return `## RÈGLES PERMANENTES
+- Ne sur-simplifie pas.
+- N'invente jamais jurisprudence, textes ou doctrine.
+- Ne compte jamais sur tes propres connaissances uniquement.
+- Ne fonde jamais ton analyse ou tes conclusions sur un texte légal, une jurisprudence ou une source doctrinale, sans en avoir vérifié l'existence et analysé le contenu exact.
+- Pour les textes légaux, vérifie systématiquement la version applicable au moment des faits ou de la situation juridique analysée.
+- Signale l'évolution de la règle de droit ou du texte applicable postérieure à la date des faits.
+- Indique systématiquement la référence des textes légaux et de la jurisprudence (références exactes et complètes).
+- Inclus systématiquement un extrait du texte légal (article, alinéa, etc.), ou de la source doctrinale sur laquelle tu t'es appuyé.
+- Inclus pour la jurisprudence un extrait de la motivation de la décision soutenant ton interprétation et ton analyse de sa portée.
+- Intègre les éléments de fait depuis les pièces fournies.
+- Inclus à la fin une liste exhaustive des pièces et sources invoquées dans ton texte.
+- Chaque fois que tu cites ou mentionnes un fait ou un élément tiré d'une pièce, inclus une référence à la pièce invoquée après la citation. Exemple : 'en date du [date], Monsieur X a assigné la société Y en liquidation judiciaire (Pièce n°3)'.
+- Emploie un style juridique très soigné et de haut niveau professionnel dans la rédaction.
+- Français juridique de haut niveau, niveau cabinet parisien d'affaires.
+- La qualité, la forme et le contenu des documents générés doit être celle d'un avocat hautement spécialisé et compétent dans le domaine juridique concerné.
+- Respecte les styles de mise en forme indiqués par l'utilisateur.
+- Signale proactivement tout risque juridique ou fiscal, même non demandé.
+- Si un élément manque dans les pièces, le signaler explicitement.
+- Ne compte jamais aveuglément sur les traductions fournies dans le dossier des pièces en langue étrangère. Analyse systématiquement la version originale de la pièce. Restitue ta propre traduction plus précise ou plus claire du contenu dans ton exposition de la portée de la pièce.
+- Excel : analyse les données chiffrées et implications juridiques/fiscales.
+- PowerPoint : analyse le contenu substantiel.
+- Structure avec des titres clairs.`;
+}
 
 function modeInstruction(mode: WorkMode): string {
   switch (mode) {
     case 'analyse':
-      return 'MODE ANALYSE. Expert juriste français. Cite systématiquement les textes et jurisprudence (références exactes). Signale les risques non demandés. Ne sur-simplifie pas.';
+      return 'MODE ANALYSE. Expert avocat français hautement compétent et spécialisé dans les questions de droit soulevées par le dossier. Signale les risques non demandés. Ne sur-simplifie pas. N\'invente jamais jurisprudence, textes ou doctrine.';
     case 'redaction':
-      return "MODE RÉDACTION. Rédige un document juridique complet, sans préambule. Toutes les mentions légales. Éléments de fait intégrés depuis les pièces. Termine par les signatures.";
+      return 'MODE RÉDACTION. Rédige un document juridique complet, sans préambule.';
     case 'modification':
-      return "MODE MODIFICATION. Identifie les passages à modifier, justifie par le droit applicable, produis la version modifiée intégrale. Marque les changements avec [MODIFIÉ : …].";
+      return 'MODE MODIFICATION. Identifie les passages à modifier, justifie par le droit applicable, produis la version modifiée intégrale. Marque les changements avec [MODIFIÉ : …].';
     case 'note':
-      return "MODE NOTE PERMANENTE. Confirme la prise en compte, résume ce qui est retenu, explique l'impact sur les prochaines analyses. Priorité absolue sur toutes tes inférences futures.";
+      return 'MODE NOTE PERMANENTE. Confirme la prise en compte, résume ce qui est retenu, explique l\'impact sur les prochaines analyses. Priorité absolue sur toutes tes inférences futures.';
   }
 }
 
 export function buildCaseSystem(
-  caseName: string, caseDomain: string,
-  notes: PermanentNote[], skills: Array<{ name: string; content: string }>,
-  mode: WorkMode
+  caseName: string,
+  caseDomain: string,
+  notes: PermanentNote[],
+  skills: Array<{ name: string; content: string }>,
+  mode: WorkMode,
 ): string {
   const noteBlock = notes.length
-    ? `\n\n## CORRECTIONS PERMANENTES (priorité absolue)\n${notes.map((n, i) => `${i+1}. ${n.content}`).join('\n')}`
+    ? `\n\n## CORRECTIONS PERMANENTES (priorité absolue)\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`
     : '';
   const skillBlock = skills.length
-    ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map(s => `### ${s.name}\n${s.content}`).join('\n\n')}`
+    ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
     : '';
-  return `Tu es Lex Assistant, assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
+  return `Tu es Lex Assistant, avocat collaborateur et assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
 
 ## DOSSIER ACTIF
 Intitulé : ${caseName}
 Domaine : ${caseDomain}${noteBlock}${skillBlock}
 
-## RÈGLES PERMANENTES
-- Cite systématiquement les textes et jurisprudence (références exactes et complètes).
-- Signale proactivement tout risque juridique ou fiscal, même non demandé.
-- Français juridique de haut niveau, niveau cabinet parisien d'affaires.
-- Si un élément manque dans les pièces, le signaler explicitement.
-- Excel : analyse les données chiffrées et implications juridiques/fiscales.
-- PowerPoint : analyse le contenu substantiel.
+${permanentInstructions()}
 
 ## ${modeInstruction(mode)}`;
 }
 
 export function buildLibSystem(
-  domain: LibDomain | 'all', skills: Array<{ name: string; content: string }>
+  domain: LibDomain | 'all',
+  skills: Array<{ name: string; content: string }>,
 ): string {
   const labels: Record<string, string> = {
-    commercial:'droit commercial', fiscal:'droit fiscal', social:'droit social',
-    civil:'droit civil', penal:'droit pénal', immobilier:'droit immobilier',
-    international:'droit international', autre:'droit général', all:'tous domaines juridiques'
+    commercial: 'droit commercial', fiscal: 'droit fiscal', social: 'droit social',
+    civil: 'droit civil', penal: 'droit pénal', immobilier: 'droit immobilier',
+    international: 'droit international', autre: 'droit général', all: 'tous domaines juridiques',
   };
   const skillBlock = skills.length
-    ? `\n\n## INSTRUCTIONS MÉTIER\n${skills.map(s => `### ${s.name}\n${s.content}`).join('\n\n')}`
+    ? `\n\n## INSTRUCTIONS MÉTIER\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
     : '';
-  return `Tu es Lex Assistant, expert en ${labels[domain] ?? 'droit français'}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
+  return `Tu es Lex Assistant, avocat collaborateur hautement spécialisé expert en ${labels[domain] ?? 'droit français'}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
 Tu as accès à une bibliothèque juridique thématique fournie avec chaque question.${skillBlock}
 
 ## RÈGLES
 - Précision académique et pratique de haut niveau.
-- Cite toujours la source exacte (arrêt, article, auteur) issue des documents fournis.
-- Structure avec des titres clairs.
+- Cite toujours la source exacte (arrêt, article, auteur, nom du document, page) issue des documents fournis.
 - Si la question dépasse les documents, le signaler explicitement.
-- Propose des analyses comparatives et chronologies jurisprudentielles.`;
+- Propose des analyses comparatives et chronologies jurisprudentielles.
+${permanentInstructions()}`;
 }
 
-// ─── File fetching — injected by the caller ───────────────────────────────────
-// api.ts no longer imports from onedrive.ts directly; instead the caller
-// provides a readFile function appropriate to the scenario.
+// ─── ClaudeAPI ────────────────────────────────────────────────────────────────
 
-async function buildDocParts(
-  docs: (CaseDocumentMeta | LibDocumentMeta)[],
-  readFile: (name: string) => Promise<ArrayBuffer>
-): Promise<ContentPart[]> {
-  const parts: ContentPart[] = [];
-  for (const doc of docs) {
-    try {
-      const buf = await readFile(doc.name);
-      parts.push(docPart(doc.name, doc.mimeType, toBase64(buf)));
-    } catch {
-      parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible sur OneDrive]` });
+export class ClaudeAPI {
+  static readonly PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy';
+  // ─── Constants ────────────────────────────────────────────────────────────────
+  protected readonly PATH = '/v1/messages';
+  protected readonly MODEL = 'claude-sonnet-4-6';
+
+  // ─── Core fetch — routes through the Google Cloud Function proxy ──────────
+
+  /**
+   * All Claude API calls go through gFetch with the GCF proxy URL.
+   * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
+   * and inject the anthropic-version header ourselves since gFetch won't add it.
+   */
+  private async callProxy(body: ClaudeMessages): Promise<ClaudeResponse> {
+    const resp = await oneDrive.gFetch(
+      ClaudeAPI.PROXY,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2024-06-01',
+        },
+        body: JSON.stringify({ path: this.PATH, ...body }),
+      },
+      true, // rawBody: skip gFetch Graph header injection
+    );
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
+      throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
     }
+    return resp.json() as Promise<ClaudeResponse>;
   }
-  return parts;
-}
 
-// ─── Case call ────────────────────────────────────────────────────────────────
-
-export interface CaseCallOpts {
-  caseName: string;
-  caseDomain: string;
-  notes: PermanentNote[];
-  docs: CaseDocumentMeta[];
-  skills: Array<{ name: string; content: string }>;
-  mode: WorkMode;
-  userMessage: string;
-  /** Caller provides file reader scoped to the case folder */
-  readFile: (fileName: string) => Promise<ArrayBuffer>;
-}
-
-export async function callClaudeCase(opts: CaseCallOpts): Promise<string> {
-  const key = getStoredKey();
-  if (!key) throw new Error('Clé API manquante. Configurez-la dans les paramètres.');
-  const system   = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
-  const docParts = await buildDocParts(opts.docs, opts.readFile);
-  const content: ContentPart[] = [...docParts, { type: 'text', text: opts.userMessage }];
-  return fetchClaude(key, { model: MODEL, max_tokens: 4096, system,
-    messages: [{ role: 'user', content: content as unknown as string }] });
-}
-
-// ─── Library call ─────────────────────────────────────────────────────────────
-
-export interface LibCallOpts {
-  domain: LibDomain | 'all';
-  docs: LibDocumentMeta[];
-  skills: Array<{ name: string; content: string }>;
-  userMessage: string;
-  history: Array<{ role: 'user' | 'assistant'; content: string }>;
-  /** Caller provides file reader scoped to the library domain folder */
-  readFile: (fileName: string) => Promise<ArrayBuffer>;
-}
-
-export async function callClaudeLib(opts: LibCallOpts): Promise<string> {
-  const key = getStoredKey();
-  if (!key) throw new Error('Clé API manquante. Configurez-la dans les paramètres.');
-  const system   = buildLibSystem(opts.domain, opts.skills);
-  const docParts = await buildDocParts(opts.docs, opts.readFile);
-  const messages: AnthropicRequest['messages'] = [
-    ...opts.history.map(h => ({ role: h.role, content: h.content })),
-    { role: 'user', content: [...docParts, { type: 'text', text: opts.userMessage }] as unknown as string }
-  ];
-  return fetchClaude(key, { model: MODEL, max_tokens: 4096, system, messages });
-}
-
-async function fetchClaude(key: string, body: AnthropicRequest): Promise<string> {
-  const resp = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-calls': 'true'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
-    throw new Error(`API Claude : ${e.error?.message ?? resp.statusText}`);
+  private claudeBody(
+    max: number,
+    messages: ClaudeMessages['messages'],
+    system?: MessageSystem,
+  ): ClaudeMessages {
+    const body: ClaudeMessages = { model: this.MODEL, max_tokens: max, messages };
+    if (system) body.system = system;
+    return body;
   }
-  const data = await resp.json() as AnthropicResponse;
-  return data.content.map(b => b.text).join('');
+
+  private extractText(data: ClaudeResponse): string {
+    return data.content.map((b) => b.text ?? '').join('');
+  }
+
+  // ─── Doc parts builder ────────────────────────────────────────────────────
+
+  private async buildDocParts(
+    folderName: string | LibDomain,
+    docs: (CaseDocumentMeta | LibDocumentMeta)[],
+    readFile: (folderName: string | LibDomain, name: string) => Promise<ArrayBuffer>,
+  ): Promise<ContentPart[]> {
+    const parts: ContentPart[] = [];
+    for (const doc of docs) {
+      try {
+        const buf = await readFile(folderName, doc.name);
+        parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
+      } catch {
+        parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible sur OneDrive]` });
+      }
+    }
+    return parts;
+  }
+
+  // ─── Duplicate detection ──────────────────────────────────────────────────
+
+  /**
+   * Compares incoming docs against those already in the knowledge base meta.
+   * Returns the list of docs that are new (not already fingerprinted).
+   * If duplicates are found, prompts the user to confirm resending them.
+   */
+  async filterNewDocs(
+    incoming: (CaseDocumentMeta | LibDocumentMeta)[],
+    existing: (CaseDocumentMeta | LibDocumentMeta)[],
+  ): Promise<(CaseDocumentMeta | LibDocumentMeta)[]> {
+    const existingPrints = new Set(existing.map(docFingerprint));
+    const duplicates = incoming.filter((d) => existingPrints.has(docFingerprint(d)));
+    const fresh = incoming.filter((d) => !existingPrints.has(docFingerprint(d)));
+
+    if (duplicates.length > 0) {
+      const names = duplicates.map((d) => `• ${d.name}`).join('\n');
+      const ok = confirm(
+        `${duplicates.length} fichier(s) déjà inclus dans la base de connaissance existante :\n\n${names}\n\nVoulez-vous les renvoyer à Claude quand même ?`,
+      );
+      return ok ? incoming : fresh;
+    }
+    return incoming;
+  }
+
+  // ─── Knowledge base — Cases ───────────────────────────────────────────────
+
+  /**
+   * Generates a markdown knowledge base from case documents and saves it to
+   * OneDrive with a versioned filename: _kb_YYYY-MM-DD_HHmm.md
+   * Returns the OneDrive path where it was saved.
+   */
+  async buildCaseKnowledgeBase(
+    meta: CaseMeta,
+    readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
+    existingKbDocs: CaseDocumentMeta[] = [],
+    appendMode: Boolean = false,
+  ): Promise<string> {
+    const docsToSend = await this.filterNewDocs(meta.documents, existingKbDocs);
+    if (!docsToSend.length) {
+      throw new Error('Aucun nouveau document à analyser.');
+    }
+
+    const docParts = await this.buildDocParts(meta.folderName, docsToSend as CaseDocumentMeta[], readFile);
+    const prompt = appendMode
+      ? `Tu complètes une base de connaissance juridique existante avec de nouveaux documents.
+Produis un complément en markdown structuré, couvrant uniquement les nouveaux éléments apportés par les documents fournis.
+Utilise les mêmes conventions de titres et de structure que la base existante.
+Ne répète pas ce qui est déjà connu. Commence directement sans préambule.`
+      : `Analyse ces documents juridiques et produis une base de connaissance structurée en markdown.
+Couvre : parties, dates, obligations, clauses clés, données chiffrées, risques identifiés, relations entre documents.
+Structure avec des titres clairs (## et ###). Commence directement sans préambule.`;
+
+    return await this.getMarkdown(docParts, prompt);
+  }
+
+  /**
+   * Loads the most recent knowledge base file for a case folder.
+   * Returns null if none exists.
+   */
+  async loadLatestCaseKb(
+    folderPath: string,
+    listFiles: (path: string) => Promise<GraphDriveItem[]>,
+    readFile: (path: string) => Promise<ArrayBuffer>,
+  ): Promise<{ content: string; filename: string } | null> {
+    const items = await listFiles(folderPath).catch(() => [] as GraphDriveItem[]);
+    const kbFiles = items
+      .filter((i) => i.file && i.name.startsWith('_kb_') && i.name.endsWith('.md'))
+      .sort((a, b) => b.name.localeCompare(a.name)); // lexicographic = chronological
+    if (!kbFiles.length) return null;
+    const latest = kbFiles[0];
+    const buf = await readFile(`${folderPath}/${latest.name}`);
+    return { content: new TextDecoder().decode(buf), filename: latest.name };
+  }
+
+  // ─── Knowledge base — Library ─────────────────────────────────────────────
+
+  async buildLibKnowledgeBase(
+    domain: LibDomain | 'all',
+    docs: LibDocumentMeta[],
+    readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
+    existingKbDocs: LibDocumentMeta[] = [],
+    appendMode: Boolean = false,
+  ): Promise<string> {
+    const docsToSend = await this.filterNewDocs(docs, existingKbDocs);
+    if (!docsToSend.length) throw new Error('Aucun nouveau document à analyser.');
+
+    const docParts = await this.buildDocParts(domain, docsToSend, readFile);
+    const prompt = appendMode
+      ? `Tu complètes une base de connaissance juridique thématique existante (domaine : ${domain}) avec de nouveaux documents. Produis un complément en markdown structuré. Ne répète pas l'existant. Commence directement sans préambule.`
+      : `Analyse ces documents juridiques (domaine : ${domain}) et produis une base de connaissance thématique structurée en markdown. Couvre : sources, règles clés, jurisprudence, doctrine, évolutions récentes. Structure avec des titres clairs. Commence directement sans préambule.`;
+    return await this.getMarkdown(docParts, prompt);
+  }
+
+  private async getMarkdown(docParts: ContentPart[], prompt: string) {
+    const data = await this.callProxy(
+      this.claudeBody(8000, [{
+        role: 'user',
+        content: [...docParts, { type: 'text', text: prompt }],
+      }]),
+    );
+    return this.extractText(data);
+  }
+  // ─── Case conversation ────────────────────────────────────────────────────
+
+  async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string> {
+    const system: MessageSystem = [{
+      type: 'text',
+      text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
+    }];
+
+    // If a knowledge base is available, inject it as a cached document
+    // instead of re-sending all raw files — token optimization
+    let content: ContentPart[];
+    if (opts.knowledgeBase) {
+      content = [
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'text/markdown', data: strToBase64(opts.knowledgeBase) },
+          title: 'Base de connaissance du dossier',
+        } as ContentPart,
+        { type: 'text', text: opts.userMessage },
+      ];
+    } else {
+      const docParts = await this.buildDocParts(folderName, opts.docs, opts.readFile);
+      content = [...docParts, { type: 'text', text: opts.userMessage }];
+    }
+
+    const data = await this.callProxy(
+      this.claudeBody(4096, [{ role: 'user', content }], system),
+    );
+    return this.extractText(data);
+  }
+
+  // ─── Library conversation ─────────────────────────────────────────────────
+
+  async callClaudeLib(folderName: string | LibDomain, opts: LibCallOpts): Promise<string> {
+    const system: MessageSystem = [{
+      type: 'text',
+      text: buildLibSystem(opts.domain, opts.skills),
+    }];
+
+    let firstUserContent: ContentPart[];
+    if (opts.knowledgeBase) {
+      firstUserContent = [
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'text/markdown', data: strToBase64(opts.knowledgeBase) },
+          title: `Bibliothèque juridique — ${opts.domain}`,
+        } as ContentPart,
+      ];
+    } else {
+      firstUserContent = await this.buildDocParts(folderName, opts.docs, opts.readFile);
+    }
+
+    // Rebuild history: inject docs only in the first user turn
+    const messages: ClaudeMessages['messages'] = opts.history.length
+      ? [
+        { role: 'user', content: [...firstUserContent, { type: 'text', text: opts.history[0].content as string }] as unknown as string },
+        ...opts.history.slice(1).map((h) => ({ role: h.role, content: h.content })),
+        { role: 'user', content: opts.userMessage },
+      ]
+      : [{ role: 'user', content: [...firstUserContent, { type: 'text', text: opts.userMessage }] as unknown as string }];
+
+    const data = await this.callProxy(this.claudeBody(4096, messages, system));
+    return this.extractText(data);
+  }
+
+  // ─── DOCX generation via Claude ──────────────────────────────────────────
+  // Claude returns markdown; the caller handles local DOCX conversion.
+  // This method exists so Cases/Library can request a structured redaction
+  // and receive clean markdown ready for generateDocx().
+
+  async requestRedaction(
+    prompt: string,
+    system: string,
+    contextParts: ContentPart[] = [],
+  ): Promise<string> {
+    const data = await this.callProxy(
+      this.claudeBody(
+        6000,
+        [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] as unknown as string }],
+        [{ type: 'text', text: system }],
+      ),
+    );
+    return this.extractText(data);
+  }
+
+  toBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let bin = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.byteLength; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+    return btoa(bin);
+  }
+  /** Build a timestamp suffix for knowledge base filenames: YYYY-MM-DD_HHmm */
+  kbTimestamp(): string {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
 }

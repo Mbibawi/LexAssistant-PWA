@@ -1,7 +1,7 @@
 import { toBase64 } from './ingest.js';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = "claude-sonnet-4-6";
-let _apiKey = '';
+let _apiKey = "";
 export function getStoredKey() { return _apiKey; }
 export function setStoredKey(k) { _apiKey = k.trim(); }
 export function clearStoredKey() { _apiKey = ''; }
@@ -23,9 +23,9 @@ function docPart(name, mime, base64) {
 function modeInstruction(mode) {
     switch (mode) {
         case 'analyse':
-            return 'MODE ANALYSE. Expert juriste français. Cite systématiquement les textes et jurisprudence (références exactes). Signale les risques non demandés. Ne sur-simplifie pas.';
+            return "MODE ANALYSE. Expert avocat français hautement compétent et spécialisé dans les questions de droit soulevées par le dossier. Signale les risques non demandés. Ne sur - simplifie pas. N'invente jamais jurisprudence, textes ou doctrine.";
         case 'redaction':
-            return "MODE RÉDACTION. Rédige un document juridique complet, sans préambule. Toutes les mentions légales. Éléments de fait intégrés depuis les pièces. Termine par les signatures.";
+            return "MODE RÉDACTION. Rédige un document juridique complet, sans préambule.";
         case 'modification':
             return "MODE MODIFICATION. Identifie les passages à modifier, justifie par le droit applicable, produis la version modifiée intégrale. Marque les changements avec [MODIFIÉ : …].";
         case 'note':
@@ -37,19 +37,34 @@ export function buildCaseSystem(caseName, caseDomain, notes, skills, mode) {
         ? `\n\n## CORRECTIONS PERMANENTES (priorité absolue)\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`
         : '';
     const skillBlock = skills.length
-        ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map(s => `### ${s.name}\n${s.content}`).join('\n\n')}`
-        : '';
-    return `Tu es Lex Assistant, assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
-
-## DOSSIER ACTIF
-Intitulé : ${caseName}
-Domaine : ${caseDomain}${noteBlock}${skillBlock}
-
-## RÈGLES PERMANENTES
-- Cite systématiquement les textes et jurisprudence (références exactes et complètes).
+        ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map((s) => `### ${s.name}\n${s.content}`).join("\n\n")}`
+        : "";
+    return `Tu es Lex Assistant, avocat collaborateur et assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
+  
+  ## DOSSIER ACTIF
+  Intitulé : ${caseName}
+  Domaine : ${caseDomain}${noteBlock}${skillBlock}
+  
+  ## RÈGLES PERMANENTES
+  - Ne sur - simplifie pas.
+  - N'invente jamais jurisprudence, textes ou doctrine.
+  - Ne compte jamais sur tes connaissances uniquement.
+  - Ne fonde jamais ton analyse ou tes conclusions sur un texte légal, une jurisprudence ou une source doctrinale, sans en avoir vérifié l'existence et analysé le contenu exact.
+  - Pour les textes légaux, vérfie systématiquement la version applicable au moment des faits ou de la situtation juridique analysée.
+  - Signale l'évolution de la règle de droit ou du texte applicable postérieure à la date des faits.
+  - Indique systématiquement la référence textes et jurisprudence (références exactes et complètes).
+  - Inclus systématiquement un extrait du texte légale (article, alinéa et etc.), ou de la source doctrinale sur laquelle tu t'es appuyé.
+- Inclus pour la jurisprudence un extrait de la motivation de la décision soutenant ton interprétation et ton analyse de sa portée.
+- Intègre les éléments de fait depuis les pièces fournies.
+- Inclus à la fin une liste exhaustive des pièces invoquées dans ton texte. 
+- Chaque fois que tu mentionne un fait ou un élément tiré d'une pièce, Inclus une référence à la pièce invoquée. Exemple: 'en date du [date], Monsieur X a assigné la société Y en liquidation judiciaire (Pièce n°3)'.
+- Emploi un style juridique très soigné et de haut niveau professionnel dans la rédaction.
+- La forme et le contenu d'une qualité attendue d'un avocat hautement spécialisé et compétent dans le domaine juridique concernée.
+- Respecte les styles de mise en forme indiqués par l'utilisateur.
 - Signale proactivement tout risque juridique ou fiscal, même non demandé.
 - Français juridique de haut niveau, niveau cabinet parisien d'affaires.
 - Si un élément manque dans les pièces, le signaler explicitement.
+- Ne compte jamais aveuglement sur les traductions fournie dans le dossier des pièces en langue étrangère. Analyse systématiquement la version originale de la pièce. Restitue ta propre traduction plus précise ou plus claire du contenu dans ton exposition de la portée de la pièce.
 - Excel : analyse les données chiffrées et implications juridiques/fiscales.
 - PowerPoint : analyse le contenu substantiel.
 
@@ -64,12 +79,12 @@ export function buildLibSystem(domain, skills) {
     const skillBlock = skills.length
         ? `\n\n## INSTRUCTIONS MÉTIER\n${skills.map(s => `### ${s.name}\n${s.content}`).join('\n\n')}`
         : '';
-    return `Tu es Lex Assistant, expert en ${labels[domain] ?? 'droit français'}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
+    return `Tu es Lex Assistant, expert en ${labels[domain] ?? "droit français"}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
 Tu as accès à une bibliothèque juridique thématique fournie avec chaque question.${skillBlock}
 
 ## RÈGLES
 - Précision académique et pratique de haut niveau.
-- Cite toujours la source exacte (arrêt, article, auteur) issue des documents fournis.
+- Cite toujours la source exacte (arrêt, article, auteur, nom du document, page) issue des documents fournis.
 - Structure avec des titres clairs.
 - Si la question dépasse les documents, le signaler explicitement.
 - Propose des analyses comparatives et chronologies jurisprudentielles.`;
