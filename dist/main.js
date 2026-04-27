@@ -91,7 +91,7 @@ function buildShell() {
     const topLeft = el("div", {
         className: "topbar_Left",
     });
-    topLeft.append(el("span", { className: "topbar_logo", innerText: "⚖" }), el("span", {
+    topLeft.append(el("span", { id: ids.logo, className: "topbar_logo", innerText: "⚖" }), el("span", {
         id: ids.title,
         className: "topbar_brand",
         innerText: "Lex Assistant",

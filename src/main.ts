@@ -101,7 +101,7 @@ function buildShell(): void {
     className: "topbar_Left",
   });
   topLeft.append(
-    el("span", { className: "topbar_logo", innerText: "⚖" }),
+    el("span", { id: ids.logo, className: "topbar_logo", innerText: "⚖" }),
     el("span", {
       id: ids.title,
       className: "topbar_brand",

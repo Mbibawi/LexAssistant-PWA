@@ -162,6 +162,32 @@ export class OneDriveAuth {
     return this.account?.name ?? this.account?.username ?? null;
   }
 
+  async oneDriveProxy(root: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
+    if (!this.user) await this.getAccessToken();
+    const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${root}`;
+
+    const { body, path, mimeType } = payload;
+
+    const headers: HeadersInit = {
+      'x-path': path || '',
+      'x-mime-type': mimeType || 'application/octet-stream',
+      'x-user': this.user || '',
+    };
+
+    const response = await fetch(url, {
+      method: method,
+      headers: headers,
+      // data is sent as the raw binary body
+      body: body || null
+    });
+
+    if (root === 'fetch' && response.ok) return await response.blob();
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || 'Proxy Error');
+    return result;
+  }
+
   /**
    * Universal fetch for both Graph API and external URLs (GCF proxy).
    * - If url starts with 'https://' it is used verbatim (external call).
@@ -229,6 +255,7 @@ class Folders extends OneDriveAuth {
   }
 
   protected async listAllFolderItems(folderPath: string): Promise<GraphDriveItem[]> {
+    return this.oneDriveProxy('list', 'GET', { path: folderPath });
     const resp = await this.gFetch(
       `${this.encode(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
     );
@@ -265,6 +292,7 @@ class Folders extends OneDriveAuth {
   }
 
   protected async readFilePath(filePath: string): Promise<ArrayBuffer> {
+    return this.oneDriveProxy('fetch', 'GET', { path: filePath });
     const resp = await this.gFetch(`${this.encode(filePath)}:/content`);
     if (!resp.ok) throw new Error(`Read ${filePath}: ${resp.status}`);
     return resp.arrayBuffer();
@@ -298,6 +326,7 @@ class Folders extends OneDriveAuth {
 
   protected async writeFilePath(filePath: string, data: ArrayBuffer | string, mimeType: string): Promise<void> {
     const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    return this.oneDriveProxy('save', 'POST', { path: filePath, body, mimeType });
     await this.gFetch(`${this.encode(filePath)}/content`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
@@ -306,6 +335,7 @@ class Folders extends OneDriveAuth {
   }
 
   protected async deleteFilePath(filePath: string): Promise<void> {
+    return this.oneDriveProxy('delete', 'DELETE', { path: filePath });
     await this.gFetch(`${this.encode(filePath)}`, { method: 'DELETE' });
   }
 
