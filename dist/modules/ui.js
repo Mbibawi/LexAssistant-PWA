@@ -6,44 +6,88 @@ import { ids } from "../main.js";
 export function byID(id) {
     return document.getElementById(id);
 }
+/**
+ * Create an element.
+ * @param tag HTML tag name.
+ * @param attrs Attributes and event handlers.
+ * @param children Child elements or strings.
+ */
 export function el(tag, attrs = {}, ...children) {
     const e = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-        if (k === "className")
+    Object.entries(attrs).forEach(([k, v]) => {
+        if (k === "className") {
             e.className = v;
-        else if (k === "innerHTML")
+        }
+        else if (k === "innerHTML") {
             e.innerHTML = v;
-        else if (k === "textContent")
+        }
+        else if (k === "textContent") {
             e.textContent = v;
-        else if (k === "style")
+        }
+        else if (k === "style" && typeof v === "object") {
             Object.assign(e.style, v);
-        else
+        }
+        else if (k.startsWith("on") && typeof v === "function") {
+            // Bonus: Support for event listeners like onClick
+            const eventName = k.toLowerCase().substring(2);
+            e.addEventListener(eventName, v);
+        }
+        else if (k in e) {
+            // If the property exists on the element (like 'id', 'src', 'href')
             e[k] = v;
-    }
-    for (const c of children) {
-        if (typeof c === "string")
-            e.appendChild(document.createTextNode(c));
+        }
+        else {
+            // For everything else, like data-attributes or aria-labels
+            e.setAttribute(k, v);
+        }
+    });
+    children.forEach(child => {
+        if (typeof child === "string")
+            e.appendChild(document.createTextNode(child));
         else
-            e.appendChild(c);
-    }
+            e.appendChild(child);
+    });
     return e;
 }
+/**
+ * Query the DOM safely.
+ * @param selector CSS selector.
+ * @param root Optional root element (default: document).
+ * @throws Error if element not found.
+ */
 export function qs(selector, root = document) {
     const found = root.querySelector(selector);
     if (!found)
         throw new Error(`Element not found: ${selector}`);
     return found;
 }
+/**
+ * Query the DOM for multiple elements.
+ * @param selector CSS selector.
+ * @param root Optional root element (default: document).
+ */
 export function qsa(selector, root = document) {
     return Array.from(root.querySelectorAll(selector));
 }
 export function toggle(e, visible) {
     visible ? show(e) : hide(e);
 }
+/**
+ * Set active class on one element in a list.
+ * @param items List of elements.
+ * @param active Element to activate.
+ * @param cls Class name (default: "active").
+ */
 export function setActive(items, active, cls = "active") {
     for (const item of items)
         item.classList.toggle(cls, item === active);
 }
+/**
+ * Show a temporary notification.
+ * @param message Message to show.
+ * @param type Type of notification (info, error, success).
+ * @param durationMs Duration in milliseconds (default: 3500).
+ */
 export function toast(message, type = "info", durationMs = 3500) {
     const container = byID(ids.toast) ??
         (() => {

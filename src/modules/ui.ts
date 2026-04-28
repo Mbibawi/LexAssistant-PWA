@@ -3,30 +3,61 @@
  * Convention: functions named el() create elements, show()/hide() toggle visibility.
  */
 import { ids } from "../main.js";
+
+
 export function byID(id: string) {
   return document.getElementById(id) as HTMLElement | null;
 }
+
+/**
+ * Create an element.
+ * @param tag HTML tag name.
+ * @param attrs Attributes and event handlers.
+ * @param children Child elements or strings.
+ */
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
-  attrs: ElAttributes = {},
+  attrs: Record<string, unknown> = {},
   ...children: (HTMLElement | string)[]
 ): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "className") e.className = v as string;
-    else if (k === "innerHTML") e.innerHTML = v as string;
-    else if (k === "textContent") e.textContent = v as string;
-    else if (k === "style") Object.assign(e.style, v as CSSStyleDeclaration
-    );
-    else (e as unknown as Record<string, unknown>)[k] = v;
-  }
-  for (const c of children) {
-    if (typeof c === "string") e.appendChild(document.createTextNode(c));
-    else e.appendChild(c);
-  }
+
+  Object.entries(attrs).forEach(([k, v]) => {
+    if (k === "className") {
+      e.className = v as string;
+    } else if (k === "innerHTML") {
+      e.innerHTML = v as string;
+    } else if (k === "textContent") {
+      e.textContent = v as string;
+    } else if (k === "style" && typeof v === "object") {
+      Object.assign(e.style, v);
+    } else if (k.startsWith("on") && typeof v === "function") {
+      // Bonus: Support for event listeners like onClick
+      const eventName = k.toLowerCase().substring(2);
+      e.addEventListener(eventName, v as EventListener);
+    } else if (k in e) {
+      // If the property exists on the element (like 'id', 'src', 'href')
+      (e as any)[k] = v;
+    } else {
+      // For everything else, like data-attributes or aria-labels
+      e.setAttribute(k, v as string);
+    }
+  });
+
+  children.forEach(child => {
+    if (typeof child === "string") e.appendChild(document.createTextNode(child));
+    else e.appendChild(child);
+
+  });
   return e;
 }
 
+/**
+ * Query the DOM safely.
+ * @param selector CSS selector.
+ * @param root Optional root element (default: document).
+ * @throws Error if element not found.
+ */
 export function qs<T extends HTMLElement>(
   selector: string,
   root: ParentNode = document,
@@ -35,7 +66,11 @@ export function qs<T extends HTMLElement>(
   if (!found) throw new Error(`Element not found: ${selector}`);
   return found;
 }
-
+/**
+ * Query the DOM for multiple elements.
+ * @param selector CSS selector.
+ * @param root Optional root element (default: document).
+ */
 export function qsa<T extends HTMLElement>(
   selector: string,
   root: ParentNode = document,
@@ -46,6 +81,12 @@ export function toggle(e: HTMLElement, visible: boolean) {
   visible ? show(e) : hide(e);
 }
 
+/**
+ * Set active class on one element in a list.
+ * @param items List of elements.
+ * @param active Element to activate.
+ * @param cls Class name (default: "active").
+ */
 export function setActive(
   items: HTMLElement[],
   active: HTMLElement,
@@ -54,6 +95,12 @@ export function setActive(
   for (const item of items) item.classList.toggle(cls, item === active);
 }
 
+/**
+ * Show a temporary notification.
+ * @param message Message to show.
+ * @param type Type of notification (info, error, success).
+ * @param durationMs Duration in milliseconds (default: 3500).
+ */
 export function toast(
   message: string,
   type: "info" | "error" | "success" = "info",

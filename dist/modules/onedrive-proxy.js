@@ -4,7 +4,7 @@ export const proxyHandler = async (req, res) => {
     const path = req.path;
     const method = req.method;
     try {
-        if (path === '/api/proxy/docx' && method === 'POST') {
+        if (path === '/api/proxy/docx' && method === 'PUT') {
             return await createAndUploadDocx(req, res);
         }
         if (path === '/api/proxy/save' && method === 'POST') {
@@ -13,7 +13,7 @@ export const proxyHandler = async (req, res) => {
         if (path === '/api/proxy/list' && method === 'GET') {
             return await listOneDriveItems(req, res);
         }
-        if (path === '/api/proxy/delete' && method === 'POST') {
+        if (path === '/api/proxy/delete' && method === 'DELETE') {
             return await deleteOneDriveItem(req, res);
         }
         if (path === '/api/proxy/fetch' && method === 'GET') {
@@ -37,18 +37,8 @@ async function createAndUploadDocx(req, res) {
         sections: [{ children: [new Paragraph({ children: [new TextRun(text)] })] }],
     });
     const buffer = await Packer.toBuffer(doc);
-    const accessToken = await getMicrosoftAccessToken();
     const fullPath = folder ? `${folder}/${name}` : name;
-    const url = endPoint(`${fullPath}:/content`);
-    const response = await fetch(url, {
-        method: 'PUT',
-        headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        },
-        //@ts-ignore
-        body: buffer,
-    });
+    const response = await fetch(endPoint(`${fullPath}:/content`), await request(req, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer));
     return await finalize(response, res);
 }
 /**
@@ -57,12 +47,7 @@ async function createAndUploadDocx(req, res) {
 async function saveFileToOneDrive(req, res) {
     const path = req.headers['x-path'];
     const mime = req.headers['x-mime-type'];
-    const accessToken = await getMicrosoftAccessToken();
-    const response = await fetch(endPoint(`${path}:/content`), {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': mime },
-        body: req.body // Raw binary Buffer
-    });
+    const response = await fetch(endPoint(`${path}:/content`), await request(req, mime, req.body));
     return await finalize(response, res);
 }
 /**
@@ -70,12 +55,7 @@ async function saveFileToOneDrive(req, res) {
  */
 async function listOneDriveItems(req, res) {
     const path = req.headers['x-path'];
-    const accessToken = await getMicrosoftAccessToken();
-    const url = endPoint(`${encodeURIComponent(path)}:/children`);
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-    });
+    const response = await fetch(endPoint(`${path}:/children`), await request(req));
     return await finalize(response, res);
 }
 /**
@@ -83,9 +63,7 @@ async function listOneDriveItems(req, res) {
  */
 async function deleteOneDriveItem(req, res) {
     const path = req.headers['x-path'];
-    const url = endPoint(encodeURIComponent(path));
-    const accessToken = await getMicrosoftAccessToken();
-    const response = await fetch(url, { method: 'DELETE', headers: { 'Authorization': `Bearer ${accessToken}` } });
+    const response = await fetch(endPoint(path), await request(req));
     if (response.status === 204)
         return res.status(200).json({ message: 'Deleted' });
     return await finalize(response, res);
@@ -95,9 +73,7 @@ async function deleteOneDriveItem(req, res) {
  */
 async function fetchFileFromOneDrive(req, res) {
     const filePath = req.headers['x-path'];
-    const accessToken = await getMicrosoftAccessToken();
-    const url = endPoint(`${filePath}:/content`);
-    const response = await fetch(url, { method: 'GET', headers: { 'Authorization': `Bearer ${accessToken}` } });
+    const response = await fetch(endPoint(`${filePath}:/content`), await request(req));
     if (!response.ok)
         return await finalize(response, res);
     const buffer = await response.arrayBuffer();
@@ -107,6 +83,21 @@ async function fetchFileFromOneDrive(req, res) {
 /**
  * Helpers
  */
+async function request(req, contentType, body) {
+    const accessToken = await getMicrosoftAccessToken();
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+    if (contentType)
+        headers['Content-Type'] = contentType;
+    const init = {
+        method: req.method,
+        headers,
+    };
+    if (body)
+        init.body = body;
+    return init;
+}
 async function finalize(response, res) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {

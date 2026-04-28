@@ -82,6 +82,11 @@ export class OneDriveAuth {
     get isConfigured() { return this.cfg.isConfigured(); }
     get root() { return this.cfg.root(); }
     setConfig(cfg) { this.cfg.setConfig(cfg); }
+    /**
+     * getMsal - Get the MSAL instance.
+     * @returns {Promise<MsalApp>} The MSAL instance.
+     * @throws {Error} If the OneDrive is not configured.
+     */
     getMsal() {
         if (this._msal)
             return Promise.resolve(this._msal);
@@ -115,6 +120,10 @@ export class OneDriveAuth {
         });
         return this._loading;
     }
+    /**
+     * getAccessToken - Get the access token for the current user.
+     * @returns {Promise<string>} The access token.
+     */
     async getAccessToken() {
         const msal = await this.getMsal();
         if (!this.account) {
@@ -134,6 +143,10 @@ export class OneDriveAuth {
         this.token = r.accessToken;
         return this.token;
     }
+    /**
+     * signIn - Sign in to OneDrive.
+     * @returns {Promise<void>}
+     */
     async signIn() {
         const msal = await this.getMsal();
         await msal.loginPopup({ scopes: this._scopes });
@@ -141,12 +154,20 @@ export class OneDriveAuth {
         if (this.account)
             this.user = this.getSignedInUser();
     }
+    /**
+     * signOut - Sign out of OneDrive.
+     * @returns {Promise<void>}
+     */
     async signOut() {
         this.account = null;
         this._msal = null;
         this._loading = null;
         sessionStorage.clear();
     }
+    /**
+     * isSignedIn - Check if the user is signed in.
+     * @returns {Promise<string | null>} The signed-in user or null.
+     */
     async isSignedIn() {
         try {
             const msal = await this.getMsal();
@@ -161,9 +182,20 @@ export class OneDriveAuth {
             return null;
         }
     }
+    /**
+     * getSignedInUser - Get the signed-in user.
+     * @returns {string | null} The signed-in user.
+     */
     getSignedInUser() {
         return this.account?.name ?? this.account?.username ?? null;
     }
+    /**
+     * oneDriveProxy - Proxy for OneDrive operations.
+     * @param root The root folder for the OneDrive operations.
+     * @param method The HTTP method for the request.
+     * @param payload The payload for the request.
+     * @returns {Promise<any>} The response from the OneDrive operations.
+     */
     async oneDriveProxy(root, method, payload) {
         if (!this.user)
             await this.getAccessToken();
@@ -230,6 +262,10 @@ class Folders extends OneDriveAuth {
         super();
         this.mainFolder = mainFolder;
     }
+    /**
+     * Ensure a folder exists.
+     * @param folderPath The path to the folder.
+     */
     async ensureFolder(folderPath) {
         try {
             await this.gFetch(this.encode(folderPath));
@@ -245,6 +281,10 @@ class Folders extends OneDriveAuth {
             body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
         });
     }
+    /**
+     * List all items in a folder.
+     * @param folderPath The path to the folder.
+     */
     async listAllFolderItems(folderPath) {
         return this.oneDriveProxy('list', 'GET', { path: folderPath });
         const resp = await this.gFetch(`${this.encode(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
@@ -254,6 +294,7 @@ class Folders extends OneDriveAuth {
     /**
      * Lists immediate subfolders of a path relative to root.
      * Used by both Cases (list dossiers) and Library (list domains).
+     * @param parentRelPath The relative path to the parent folder.
      */
     async listSubFolders(parentRelPath) {
         try {
@@ -267,11 +308,17 @@ class Folders extends OneDriveAuth {
     /**
      * Lists non-underscore files in a folder.
      * Used by both Cases and Library to enumerate documents.
+     * @param folderAbsPath The absolute path to the folder.
      */
     async listFiles(folderAbsPath) {
         const items = await this.listAllFolderItems(folderAbsPath);
-        return items.filter((i) => i.file && !i.name.startsWith('_'));
+        return items.filter((i) => i.file);
     }
+    /**
+     * Reads a JSON file from the given file path.
+     * @param filePath The path to the JSON file.
+     * @returns The parsed JSON data, or null if the file cannot be read.
+     */
     async readJson(filePath) {
         try {
             const buf = await this.readFilePath(filePath);
@@ -282,6 +329,11 @@ class Folders extends OneDriveAuth {
             return null;
         }
     }
+    /**
+     * Reads the content of a file from OneDrive.
+     * @param filePath The path to the file to read.
+     * @returns A Promise that resolves to the content of the file as an ArrayBuffer.
+     */
     async readFilePath(filePath) {
         return this.oneDriveProxy('fetch', 'GET', { path: filePath });
         const resp = await this.gFetch(`${this.encode(filePath)}:/content`);
@@ -289,9 +341,20 @@ class Folders extends OneDriveAuth {
             throw new Error(`Read ${filePath}: ${resp.status}`);
         return resp.arrayBuffer();
     }
+    /**
+      * Writes JSON data to a file.
+     * @param filePath The path to the file to write.
+     * @param data The data to write to the file.
+     */
     async writeJson(filePath, data) {
         await this.writeFilePath(filePath, JSON.stringify(data, null, 2), 'application/json');
     }
+    /**
+     * Writes a file to OneDrive.
+     * @param filePath The path to the file to write.
+     * @param data The data to write to the file.
+     * @param mimeType The MIME type of the file.
+     */
     async writeFileLarge(filePath, data, mimeType) {
         if (data.byteLength <= 4 * 1024 * 1024) {
             await this.writeFilePath(filePath, data, mimeType);
@@ -314,6 +377,12 @@ class Folders extends OneDriveAuth {
                 throw new Error(`Chunk upload failed at ${off}`);
         }
     }
+    /**
+     * Writes a file to OneDrive.
+     * @param filePath The path to the file to write.
+     * @param data The data to write to the file.
+     * @param mimeType The MIME type of the file.
+     */
     async writeFilePath(filePath, data, mimeType) {
         const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
         return this.oneDriveProxy('save', 'POST', { path: filePath, body, mimeType });
