@@ -231,7 +231,7 @@ function buildSettingsShortcut(container, userName) {
     configBtn.onclick = () => cases.openSettingsModal(); //!add a general onedrive settings modal to be opedn
     odConnect.onclick = async () => {
         if (!oneDrive.account)
-            await oneDrive.signIn(null);
+            await oneDrive.signIn();
         if (oneDrive.account)
             odStatus.textContent = "☁ " + oneDrive.account.name;
     };
@@ -278,7 +278,7 @@ function updateTopBar(label, switchTo, action) {
     if (!odBtn)
         return;
     if (!oneDrive.account)
-        oneDrive.signIn(null);
+        oneDrive.signIn();
     const userName = oneDrive.account?.name;
     odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
 }

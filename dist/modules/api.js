@@ -102,7 +102,6 @@ ${permanentInstructions()}`;
 }
 // ─── ClaudeAPI ────────────────────────────────────────────────────────────────
 export class ClaudeAPI {
-    static PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy';
     // ─── Constants ────────────────────────────────────────────────────────────────
     PATH = 'v1/messages';
     MODEL = 'claude-sonnet-4-6';
@@ -112,15 +111,8 @@ export class ClaudeAPI {
      * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
      * and inject the anthropic-version header ourselves since gFetch won't add it.
      */
-    async callGoogleProxy(messages, api = 'claude') {
-        const resp = await oneDrive.gFetch(`${ClaudeAPI.PROXY}/api/proxy/${api}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'anthropic-version': '2024-06-01',
-            },
-            body: JSON.stringify({ path: this.PATH, messages: messages }),
-        }, true);
+    async callProxy(messages, api = 'claude') {
+        const resp = await oneDrive.callClaudeProxy(api, JSON.stringify({ path: this.PATH, messages: messages }), "2024-06-01");
         if (!resp.ok) {
             const e = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
             throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
@@ -216,7 +208,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         return await this.getMarkdown(docParts, prompt);
     }
     async getMarkdown(docParts, prompt) {
-        const data = await this.callGoogleProxy(this.claudeBody(8000, [{
+        const data = await this.callProxy(this.claudeBody(8000, [{
                 role: 'user',
                 content: [...docParts, { type: 'text', text: prompt }],
             }]));
@@ -245,7 +237,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
             const docParts = await this.buildDocParts(folderName, opts.docs, opts.readFile);
             content = [...docParts, { type: 'text', text: opts.userMessage }];
         }
-        const data = await this.callGoogleProxy(this.claudeBody(4096, [{ role: 'user', content }], system));
+        const data = await this.callProxy(this.claudeBody(4096, [{ role: 'user', content }], system));
         return this.extractText(data);
     }
     // ─── Library conversation ─────────────────────────────────────────────────
@@ -275,7 +267,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 { role: 'user', content: opts.userMessage },
             ]
             : [{ role: 'user', content: [...firstUserContent, { type: 'text', text: opts.userMessage }] }];
-        const data = await this.callGoogleProxy(this.claudeBody(4096, messages, system));
+        const data = await this.callProxy(this.claudeBody(4096, messages, system));
         return this.extractText(data);
     }
     // ─── DOCX generation via Claude ──────────────────────────────────────────
@@ -283,7 +275,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     // This method exists so Cases/Library can request a structured redaction
     // and receive clean markdown ready for generateDocx().
     async requestRedaction(prompt, system, contextParts = []) {
-        const data = await this.callGoogleProxy(this.claudeBody(6000, [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] }], [{ type: 'text', text: system }]));
+        const data = await this.callProxy(this.claudeBody(6000, [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] }], [{ type: 'text', text: system }]));
         return this.extractText(data);
     }
     toBase64(buffer) {

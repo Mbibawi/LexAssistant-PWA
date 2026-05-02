@@ -417,18 +417,18 @@ export class OneDriveAuth {
     return result;
   }
 
-  async callClaudeProxy(api: string, body: string) {
+  async callClaudeProxy(api: string, body: string, anthropicVersion: string) {
     return await this.gFetch(
       `${this.CLAUDE_PROXY}${api}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'anthropic-version': '2024-06-01',
+          'anthropic-version': anthropicVersion,
         },
         body: body,
       },
-      true, // rawBody: skip gFetch Graph header injection
+      false,
     );
   }
 
