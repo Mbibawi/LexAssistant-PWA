@@ -1414,48 +1414,63 @@ export class Cases extends Common {
   // ─── Modals ───────────────────────────────────────────────────────────────
 
   private openCaseFormModal(existing: FolderMeta | null): void {
-    if (!oneDrive.userOid) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
+    if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
     const isEdit = !!existing;
     const overlay = el('div', { className: 'modal-overlay' });
     document.body.appendChild(overlay);
     const dialog = el('div', { className: 'modal-dialog modal-dialog--form' });
     overlay.appendChild(dialog);
-    dialog.innerHTML = `
-      <h2 class="modal-title">${isEdit ? 'Modifier le dossier' : 'Nouveau dossier'}</h2>
-      <label class="form-label">Intitulé <span class="required">*</span></label>
-      <input class="form-input" id="f-name" type="text" value="${existing?.name ?? ''}"/>
-      <label class="form-label">Domaine juridique</label>
-      <input class="form-input" id="f-domain" type="text" placeholder="Droit commercial…" value="${existing?.domain ?? ''}"/>
-      <label class="form-label">Nom du dossier OneDrive <span style="font-weight:400;color:var(--c-gray-400)">(auto si vide)</span></label>
-      <input class="form-input" id="f-folder" type="text" value="${existing?.folderName ?? ''}"/>
-      <label class="form-label">Statut</label>
-      <select class="form-select" id="f-status">
-        <option value="active"    ${!existing || existing.status === 'active' ? 'selected' : ''}>En cours</option>
-        <option value="suspended" ${existing?.status === 'suspended' ? 'selected' : ''}>Suspendu</option>
-        <option value="closed"    ${existing?.status === 'closed' ? 'selected' : ''}>Clôturé</option>
-      </select>
-      <div class="modal-btns">
-        <button class="btn btn--secondary" id="f-cancel">Annuler</button>
-        <button class="btn btn--primary"   id="f-save">${isEdit ? 'Enregistrer' : 'Créer'}</button>
-      </div>`;
-    const nameInput = qs<HTMLInputElement>('#f-name', dialog);
-    const folderInput = qs<HTMLInputElement>('#f-folder', dialog);
+    const nameInput = el("input", { className: "form-input", id: "f-name", type: "text", value: `${existing?.name ?? ''}` });
+    const folderInput = el("input", { className: "form-input", id: "f-folder", type: "text", value: `${existing?.folderName ?? ''}` });
+    const cancel = el("button", { className: "btn btn--secondary", id: "f-cancel", innerText: "Annuler" });
+    const save = el("button", { className: "btn btn--primary", id: "f-save", innerText: isEdit ? 'Enregistrer' : 'Créer' });
+    const selectStatuts = el("select", { className: "form-select", id: "f-status" });
+    const fdomain = el("input", { className: "form-input", id: "f-domain", type: "text", placeholder: "Droit commercial…", value: `${existing?.domain ?? ''}` });
+    selectStatuts.append(
+      el("option", { value: "active", innerText: "En cours" }),
+      el("option", { value: "suspended", innerText: "Suspendu" }),
+      el("option", { value: "closed", innerText: "Clôturé" })
+    );
+
+    dialog.append(
+      el("h2", { className: "modal-title", innerText: `${isEdit ? 'Modifier le dossier' : 'Nouveau dossier'}` }),
+      el("label", { className: "form-label", innerHTML: `Intitulé <span class="required">*</span>` }),
+      nameInput,
+      el("label", { className: "form-label", innerText: `Domaine juridique` }),
+      fdomain,
+      el("label", { className: "form-label", innerHTML: `Nom du dossier OneDrive <span style="font-weight:400;color:var(--c-gray-400)">(auto si vide)</span></label>` }),
+      folderInput,
+      el("label", { className: "form-label", innerText: `Statut` }),
+      selectStatuts,
+      el("div", { className: "modal-btns" },
+        cancel,
+        save
+      )
+    );
+
     nameInput.addEventListener('input', () => {
       if (!isEdit && !folderInput.value) folderInput.placeholder = this.sanitiseFolder(nameInput.value) || 'DOSSIER_NOM';
     });
-    qs<HTMLButtonElement>('#f-cancel', dialog).onclick = () => overlay.remove();
-    qs<HTMLButtonElement>('#f-save', dialog).onclick = async () => {
+    cancel.onclick = () => overlay.remove();
+    save.onclick = async () => {
       const name = nameInput.value.trim();
-      const domain = qs<HTMLInputElement>('#f-domain', dialog).value.trim() || 'Droit général';
+      const domain = fdomain.value.trim() || 'Droit général';
       const raw = folderInput.value.trim();
       const folder = raw ? this.sanitiseFolder(raw) : this.sanitiseFolder(name);
-      const status = qs<HTMLSelectElement>('#f-status', dialog).value as FolderMeta['status'];
+      const status = selectStatuts.value as FolderMeta['status'];
       if (!name || !folder) { toast(!name ? 'Nom obligatoire.' : 'Dossier invalide.', 'error'); return; }
-      const btn = qs<HTMLButtonElement>('#f-save', dialog);
-      btn.disabled = true;
-      btn.textContent = 'Création…';
+      save.disabled = true;
+      save.textContent = 'Création…';
       const now = Date.now();
-      const meta: CaseMeta = { name, folderName: folder, domain, status, createdAt: existing?.createdAt ?? now, updatedAt: now, documents: existing?.documents ?? [] };
+      const meta: CaseMeta = {
+        name,
+        folderName: folder,
+        domain,
+        status,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        documents: existing?.documents ?? []
+      };
       try {
         await this.writeCaseMeta(folder, meta);
         overlay.remove();
@@ -1468,7 +1483,7 @@ export class Cases extends Common {
         this.renderCaseList();
         await this.selectCase(folder);
         toast(isEdit ? 'Dossier modifié.' : 'Dossier créé.', 'success');
-      } catch (err) { toast('Erreur : ' + (err as Error).message, 'error'); btn.disabled = false; btn.textContent = isEdit ? 'Enregistrer' : 'Créer'; }
+      } catch (err) { toast('Erreur : ' + (err as Error).message, 'error'); save.disabled = false; save.textContent = isEdit ? 'Enregistrer' : 'Créer'; }
     };
     nameInput.focus();
   }
