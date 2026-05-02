@@ -1413,8 +1413,9 @@ export class Cases extends Common {
 
   // ─── Modals ───────────────────────────────────────────────────────────────
 
-  private openCaseFormModal(existing: FolderMeta | null): void {
-    if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
+  private async openCaseFormModal(existing: FolderMeta | null): Promise<void> {
+    if (!oneDrive.account) await oneDrive.signIn();
+  //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
     const isEdit = !!existing;
     const overlay = el('div', { className: 'modal-overlay' });
     document.body.appendChild(overlay);
