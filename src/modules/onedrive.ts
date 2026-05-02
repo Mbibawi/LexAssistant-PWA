@@ -830,7 +830,7 @@ class MSAL {
   private _app: MsalApp;
   private _clientId: string = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
   private _tenantID: string = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
-  private _redirectUri: string = "https://mbibawi.github.io/LexAssistant-PWA/"; //!must be the same domain as the app;
+  private _redirectUri: string = "https://mbibawi.github.io/LexAssistant-PWA"; //!must be the same domain as the app;
   private loginRequest = { scopes: [''] };
 
   constructor(scopes: string[] = ["Files.ReadWrite"]) {
