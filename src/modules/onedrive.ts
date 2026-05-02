@@ -836,6 +836,7 @@ class MSAL {
   constructor(scopes: string[] = ["Files.ReadWrite"]) {
     this.loginRequest.scopes = scopes;
     this._app = new msal.PublicClientApplication(this.msalConfig());
+    this._app.initialize();
   }
 
   get msalApp() { return this._app };
