@@ -78,8 +78,7 @@ class MSAL {
   private readonly _clientId: string = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
   private readonly _tenantID: string = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
   private readonly _redirectUri: string = "https://mbibawi.github.io/ExcelInvoicingAddIn"; //!must be the same domain as the app;
-  //@ts-expect-error
-  private _app: MsalApp;
+  private _app: MsalApp = new msal.PublicClientApplication(this.msalConfig());
   private _initialized: boolean = false;
   private loginRequest = { scopes: [''] };
 
@@ -106,8 +105,7 @@ class MSAL {
 
   private async init(): Promise<void> {
     if (this._initialized) return;
-    //@ts-expect-error
-    this._app = msal.PublicClientApplication.createPublicClientApplication(this.msalConfig());
+    this._app = new msal.PublicClientApplication(this.msalConfig());
     await this._app.initialize(); // required in MSAL browser v3+
     this._initialized = true;
     const response = await this._app.handleRedirectPromise();
@@ -119,7 +117,7 @@ class MSAL {
 
   // Function to check existing authentication context
   async acquireToken(): Promise<{ token: string; account: MsalAccount } | null | void> {
-    await this.init();
+    //await this.init();
     try {
       const account = this._app.getAllAccounts()[0];
       if (account) {
