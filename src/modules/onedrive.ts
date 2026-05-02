@@ -166,6 +166,7 @@ class MSAL {
       return { token: tokenResponse.accessToken, account }
     } catch (error) {
       console.error("Error acquiring token from loginWithPopup(): ", error);
+      return null
       //@ts-ignore
       // if (error instanceof InteractionRequiredAuthError) { }
       // Fallback to popup if silent token acquisition fails
