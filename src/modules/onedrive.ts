@@ -78,7 +78,8 @@ class MSAL {
   private readonly _clientId: string = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
   private readonly _tenantID: string = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
   private readonly _redirectUri: string = "https://mbibawi.github.io/ExcelInvoicingAddIn"; //!must be the same domain as the app;
-  private _app: MsalApp = new msal.PublicClientApplication(this.msalConfig());//!this must come after clientId and redirectUri are delcared
+  //@ts-expect-error
+  private _app: MsalApp;
   private _initialized: boolean = false;
   private loginRequest = { scopes: [''] };
 
@@ -105,6 +106,8 @@ class MSAL {
 
   private async init(): Promise<void> {
     if (this._initialized) return;
+    //@ts-expect-error
+    this._app = msal.PublicClientApplication.createPublicClientApplication(this.msalConfig());
     await this._app.initialize(); // required in MSAL browser v3+
     this._initialized = true;
     const response = await this._app.handleRedirectPromise();
