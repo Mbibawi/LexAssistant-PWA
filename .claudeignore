@@ -21,6 +21,7 @@ dist/
 build/
 out/
 scripts/
+src/azure-functions/
 .next/
 .nuxt/
 .svelte-kit/

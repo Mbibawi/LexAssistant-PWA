@@ -1,5 +1,16 @@
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
+type msalConfig = {
+  auth: {
+    clientId: string,
+    authority: string,
+    redirectUri: string,
+  },
+  cache: {
+    cacheLocation: string,
+    storeAuthStateInCookie: boolean
+  }
+}
 type DocKind = 'piece' | 'jurisprudence' | 'doctrine' | 'redige';
 
 
@@ -13,15 +24,26 @@ type LibDomain =
 
   // ─── MSAL types ───────────────────────────────────────────────────────────────
   
-  type MsalApp = {
-    loginPopup(r: { scopes: string[] }): Promise<{ accessToken: string }>;
+type MsalApp = {
+  initialize(): Promise<void>;
+  loginPopup(r: { scopes: string[] }): Promise<{ account: MsalAccount }>;
     acquireTokenSilent(r: { scopes: string[]; account: MsalAccount }): Promise<{ accessToken: string }>;
-    acquireTokenPopup(r: { scopes: string[] }): Promise<{ accessToken: string }>;
+  acquireTokenPopup(r: { scopes: string[] }): Promise<{ accessToken: string }>;
+  acquireTokenRedirect(r: { scopes: string[] }): Promise<{ accessToken: string }>;
     getAllAccounts(): MsalAccount[];
-    handleRedirectPromise(): Promise<null>;
+  handleRedirectPromise(): Promise<{ account: MsalAccount | null; accessToken: string | null }>;
+  loginRedirect(r: { scopes: string[]; prompt?: string }): Promise<void>;
+  ssoSilent(r: { scopes: string[]; loginHint?: string }): Promise<{ account?: MsalAccount, accessToken?: string }>;
+  setActiveAccount(account: MsalAccount): void
   }
 
-type MsalAccount = { homeAccountId: string; username: string; name?: string }
+type MsalAccount = {
+  homeAccountId: string;
+  username: string;
+  name?: string;
+  idTokenClaims: { oid: string };
+  localAccountId?: string;
+}
   
   declare const msal : {
     PublicClientApplication: new (params: object) => MsalApp;
@@ -214,3 +236,58 @@ type ElAttributes = {
 type ids = {
   chat: "user-input"
 }
+type header = {
+  "Authorization": string;
+  "Content-Type": string;
+  [key: string]: string;
+}
+
+declare class XML {
+  schema: string;
+  constructor(doc: XMLDocument, lang: string);
+  getTables(w: XMLDocument): Element[];
+  findTableByTitle(all: Element[], title: string): Element;
+  getTableRow(table: Element, index: Number): Element;
+  getTableCell(table: Element, row: Number, col: Number): Element;
+  editTables(xml: XML, document: XMLDocument);
+  insertRowAfter(table: Element, after: any, row: any, newRow: any);
+  deleteRow(table: Element, row: Number);
+  appendRow(table: Element, row: any);
+  createTableRow(): Element;
+  getRowCells(tableRow: Element): Element[];
+  createTableCell(): Element;
+  getTextElement(cell: Element, index: number): Element;
+  appendParagraph(cell): Element;
+  setTextLanguage(cell: Element, lang: string): Element;
+  setTableCellLanguage(table: Element, row: Number, col: Number, lang: string);
+  getPropElement(cell: Element, index: number): Element;
+  getParagraph(cell: Element): Element;
+  setTextLanguage(cell: Element): Element;
+  createPropElement(cell: Element): Element;
+  findPropertyParagraph(paragraph: Element): Element;
+  getShadowElement(tcPr: Element, n: number): Element;
+  createShadowElement(): Element;
+  getParagraphStyle(pPr: any, n: number): Element;
+  createParagraphStyle(): Element;
+  getStyle(index: number, is: boolean): string;
+  getContentControls(parent: XMLDocument | Element): Element[];
+  findContentControlsByTitle(ctrls: Element[], title: string): Element[];
+  getContentControls(body: Element): Element[];
+  editContentControlText(control: Element, value: string): void;
+}
+
+declare class JSZip {
+  loadAsync(arrayBuffer: ArrayBuffer): Promise<JSZip>;
+  files: JSZipFile[];
+  file(name: string, serialized?: string): JSZipFile;
+  generateAsync(type: { type: "blob" }): Promise<Blob>;
+}
+
+type JSZipFile = {
+  name: string;
+  content: string;
+  async(type = 'string'): Promise<string>;
+}
+
+
+

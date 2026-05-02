@@ -11,6 +11,7 @@
 
 import { Cases, Library, OneDriveAuth } from "./modules/onedrive.js";
 import { byID, el, toggle } from './modules/ui.js';
+import { DocumentContext as OfficeAddin } from './modules/word-addin.js';
 
 document.addEventListener('DOMContentLoaded', boot);
 
@@ -18,6 +19,7 @@ document.addEventListener('DOMContentLoaded', boot);
 export const oneDrive = new OneDriveAuth();
 const cases = new Cases("Affaires");
 const library = new Library("Bibliotheque");
+const officeAddin = new OfficeAddin(cases);
 
 export const ids = {
   btnBuildKb: "btn-build-kb",
@@ -84,6 +86,7 @@ export const ids = {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 async function boot(): Promise<void> {
+  await officeAddin.init();
   buildShell();
 
   if ('serviceWorker' in navigator) {
@@ -201,10 +204,7 @@ function showSelector(): void {
 
   selectorContainer.append(selectorHeader, selectorCards);
 
-  const { configBtn, syncBtn } = buildSettingsShortcut(
-    selectorContainer,
-    cases.userName(),
-  );
+  buildSettingsShortcut(selectorContainer, cases.user());
 
   selectorHeader.append(
     el("div", { className: "selector-logo", textContent: logo }),
@@ -227,7 +227,7 @@ function showSelector(): void {
         "Historique de conversation",
         "Génération et sauvegarde .docx",
       ],
-      action: () => mountDossiers(configBtn, syncBtn),
+      action: () => mountDossiers(),
     }),
     buildScenarioCard({
       id: "bibliotheque",
@@ -241,7 +241,7 @@ function showSelector(): void {
         "Conversations multi-tours par domaine",
         "Recherche et analyse comparative",
       ],
-      action: () => mountBibliotheque(configBtn, syncBtn),
+      action: () => mountBibliotheque(),
     }));
 }
 
@@ -286,54 +286,43 @@ function buildSettingsShortcut(
     textContent: "⚙ Paramètres",
   });
 
-  const syncBtn = el("button", {
+  const odConnect = el("button", {
     className: "btn btn--primary btn--sm",
     textContent: userName ? "☁ Synchroniser" : "☁ Connecter OneDrive",
   });
+  configBtn.onclick = () => cases.openSettingsModal();//!add a general onedrive settings modal to be opedn
+  odConnect.onclick = async () => {
+    if (!oneDrive.account) await oneDrive.signIn(null);
+    if (oneDrive.account) odStatus.textContent = "☁ " + oneDrive.account.name;
+  };
 
-  row.append(odStatus, configBtn, syncBtn);
+  row.append(odStatus, configBtn, odConnect);
   container.appendChild(row);
-  return { configBtn, syncBtn };
 }
 
 // ─── Mount Dossiers ───────────────────────────────────────────────────────────
 
-async function mountDossiers(
-  configBtn: HTMLButtonElement,
-  syncBtn: HTMLButtonElement,
-): Promise<void> {
-  await updateTopbarForSelector(cases);
-  configBtn.onclick = () => cases.openSettingsModal();
-  syncBtn.onclick = async () => await cases.refreshCaseFromOneDrive();
-  updateTopBar("Dossiers", "📚 Bibliothèque", () =>
-    mountBibliotheque(configBtn, syncBtn),
+async function mountDossiers(): Promise<void> {
+  updateTopBar("Dossiers", "📚 Bibliothèque", () => mountBibliotheque(),
   );
   cases.showUI();
 }
 
 // ─── Mount Bibliothèque ───────────────────────────────────────────────────────
 
-async function mountBibliotheque(
-  configBtn: HTMLButtonElement,
-  connectBtn: HTMLButtonElement,
-): Promise<void> {
-  await updateTopbarForSelector(library);
-  configBtn.onclick = () => library.openSettingsModal();
-  connectBtn.onclick = async () => await library.syncCurrentDomain();
+async function mountBibliotheque(): Promise<void> {
   updateTopBar("Bibliothèque", "📁 Dossiers", () =>
-    mountDossiers(configBtn, connectBtn),
+    mountDossiers(),
   );
-
   // Library builds its own UI into the container
   await library.showUI();
 }
 
 // ─── Topbar state per scenario ────────────────────────────────────────────────
 
-async function updateTopbarForSelector(app: Cases | Library): Promise<void> {
+function updateTopbarForSelector() {
   const homeBtn = byID(ids.home) as HTMLButtonElement;
   const switchBtn = byID(ids.btnSwitch) as HTMLButtonElement;
-  const odBtn = byID(ids.btnOneDrive) as HTMLButtonElement;
   const caseInfo = byID(ids.topBarCaseInfo) as HTMLElement;
   const breadcrumb = byID(ids.topBarBreadcrumb) as HTMLElement;
 
@@ -341,16 +330,12 @@ async function updateTopbarForSelector(app: Cases | Library): Promise<void> {
   toggle(switchBtn, false);
   toggle(caseInfo, false);
   if (breadcrumb) breadcrumb.textContent = "";
-  // Try silent OneDrive sign-in
-  if (oneDrive.isConfigured) {
-    const userName = await oneDrive.isSignedIn();
-    if (odBtn) odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
-  }
 }
 
 function updateTopBar(label: string, switchTo: string, action: Function): void {
   const homeBtn = byID(ids.home) as HTMLButtonElement;
   const switchBtn = byID(ids.btnSwitch) as HTMLButtonElement;
+  const odBtn = byID(ids.btnOneDrive) as HTMLButtonElement;
   const breadcrumb = byID(ids.topBarBreadcrumb) as HTMLElement;
 
   toggle(homeBtn, true);
@@ -360,4 +345,11 @@ function updateTopBar(label: string, switchTo: string, action: Function): void {
     switchBtn.onclick = () => action();
   }
   if (breadcrumb) breadcrumb.textContent = label;
+
+
+  // Try silent OneDrive sign-in
+  if (!odBtn) return;
+  if (!oneDrive.account) oneDrive.signIn(null);
+  const userName = oneDrive.account?.name;
+  odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
 }
