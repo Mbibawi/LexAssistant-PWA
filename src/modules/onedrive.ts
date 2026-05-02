@@ -895,7 +895,8 @@ class MSAL {
     try {
       const loginResponse = await this._app.loginPopup(this.loginRequest);
       console.log('loginResponse = ', loginResponse);
-      const account = loginResponse.account
+      const account = loginResponse.account;
+      if (!account) return null;
       this._app.setActiveAccount(account);
 
       const tokenResponse = await this._app.acquireTokenSilent({
@@ -908,14 +909,13 @@ class MSAL {
     } catch (error) {
       console.error("Error acquiring token from loginWithPopup(): ", error);
       //@ts-ignore
-      if (error instanceof InteractionRequiredAuthError) {
-        // Fallback to popup if silent token acquisition fails
-        const response = await this._app.acquireTokenPopup({
-          scopes: ["Files.ReadWrite"]
-        });
-        console.log("Token acquired via popup:", response.accessToken);
-        return this.acquireToken();
-      }
+      // if (error instanceof InteractionRequiredAuthError) { }
+      // Fallback to popup if silent token acquisition fails
+      const response = await this._app.acquireTokenPopup({
+        scopes: ["Files.ReadWrite"]
+      });
+      console.log("Token acquired via popup:", response.accessToken);
+      return this.acquireToken();
     }
   }
 
