@@ -38,8 +38,6 @@ import { generateDocx } from './docxgen.js';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LS_CONFIG = 'lex_onedrive_config';
-const MSAL_CDN = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@5.8.0/lib/msal-browser.min.js';
-const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
 const APP_ROOT = "Legal/Mon Cabinet d'Avocat/_LexAssistant";
 const FOLDER_SKILLS = '_Skills';
 const APP_CONFIG_FILE = '_config.json';
@@ -74,760 +72,10 @@ class Configuration {
   root(): string { return this.config?.rootFolder ?? APP_ROOT; }
 }
 
-// ─── OneDriveAuth — MSAL auth + raw Graph/proxy fetch ────────────────────────
 
-export class OneDriveAuth {
-  readonly cfg: Configuration = new Configuration();
-  private readonly CLIENT_ID: string = '9cb553c1-8473-4b2a-91d4-fef8b7cd7bff';
-  private readonly TENANT_ID: string = 'f45eef0e-ec91-44ae-b371-b160b4bbaa0c';
-  private _scopes: string[] = ['Files.ReadWrite', 'User.Read', 'openid', 'profile'];
-  private _MSAL = new MSAL();
-  private _msal: MsalApp | null = null;
-  private _loading: Promise<MsalApp> | null = null;
-  private _token: string | null = null;
-  private _account: MsalAccount | null = null;
-  private _userOid: string | null = null;
-
-  get msal() { return this._msal; }
-  get account() { return this._account; }
-  get userOid() { return this._userOid; }
-  get token() { return this._token; }
-  get config() { return this.cfg.config; }
-  get isConfigured() { return this.cfg.isConfigured(); }
-  get root() { return this.cfg.root(); }
-  setConfig(cfg: OneDriveConfig) { this.cfg.setConfig(cfg); }
-
-  /**
-   * getMsal - Get the MSAL instance.
-   * @returns {Promise<MsalApp>} The MSAL instance.
-   * @throws {Error} If the OneDrive is not configured.
-   */
-  private getMsal(): Promise<MsalApp> {
-    return Promise.resolve(this._msal ?? this._MSAL.msalApp);
-    let loading = this._loading, config = this.config, _msal = this.msal;
-    const clientId = this.CLIENT_ID, tenantId = this.TENANT_ID, signIn = this.signIn;
-
-    function old() {
-      if (loading) return loading;
-      loading = new Promise((res, rej) => {
-        const init = async () => {
-          if (!config) throw new Error('OneDrive non configuré');
-          const app = new msal.PublicClientApplication({
-            auth: {
-              clientId: clientId,
-              authority: `https://login.microsoftonline.com/${tenantId}`,
-              redirectUri: 'https://mbibawi.github.io/LexAssistant-PWA/',
-            },
-            cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
-          });
-          _msal = app;
-
-          await signIn(app);
-          //await app.handleRedirectPromise().catch(() => null);
-          return app;
-        };
-        if (msal) { init().then(res).catch(rej); return; }
-        const s = document.createElement('script');
-        s.src = MSAL_CDN;
-        s.onload = () => init().then(res).catch(rej);
-        s.onerror = () => rej(new Error('Impossible de charger MSAL'));
-        document.head.appendChild(s);
-      });
-      return loading;
-    }
-  }
-
-  /**
-   * getAccessToken - Get the access token for the current user.
-   * @returns {Promise<string>} The access token.
-   */
-  private async getAccessToken(): Promise<string | null> {
-    return this.signIn(null);
-    const msal = await this.getMsal();
-    const accounts = msal?.getAllAccounts();
-    if (accounts?.length) this._account = accounts[0];
-    if (this._account) {
-      try {
-        this._token = (await msal.acquireTokenSilent({ scopes: this._scopes, account: this._account! })).accessToken;
-        return this._token;
-      } catch { /* fall through to popup */ }
-    }
-    await this.signIn(msal);
-    //const r = await msal.loginPopup({ scopes: this._scopes });
-    //this._token = r.accessToken;
-    return this._token;
-  }
-
-  /**
-   * signIn - Sign in to OneDrive.
-   * @returns {Promise<void>}
-   */
-  async signIn(msal: MsalApp | null): Promise<string | null> {
-    const acquired = await this._MSAL.acquireToken();
-    this._token = acquired?.token || null;
-    this._account = acquired?.account || null;
-    this._token ? alert(`Signed in successfully` + this._token) : alert(`Failed to sign in`);
-    return this._token;
-    let account = this._account, token = this._token, scopes = this._scopes;
-    const getMsal = this.getMsal, getSignedInUser = this.getSignedInUser;
-    async function old() {
-      if (!msal) msal = await getMsal();
-      if (!msal) throw new Error('MSAL instance non disponible');
-      await msal.initialize();
-      const silentResult = await msal.ssoSilent({
-        scopes: scopes,
-        //loginHint: this._account?.username
-      });
-      account = silentResult.account || null;
-
-      if (!account) {
-        await msal.loginRedirect({
-          scopes: scopes,
-          prompt: 'select_account'
-        });
-
-
-      }
-      //await msal.loginPopup({ scopes: this._scopes });
-      account = msal.getAllAccounts()[0] ?? null;
-      if (!account) throw new Error('MSAL account not found despite redirection');
-      token = (await msal.acquireTokenSilent({ scopes: scopes, account: account })).accessToken;
-      return getSignedInUser(account);
-    }
-
-  }
-
-  /**
-   * signOut - Sign out of OneDrive.
-   * @returns {Promise<void>}
-   */
-  async signOut(): Promise<void> {
-    this._account = null;
-    this._msal = null;
-    this._loading = null;
-    this._userOid = null;
-    sessionStorage.clear();
-  }
-
-  /**
-   * isSignedIn - Check if the user is signed in.
-   * @returns {Promise<string | null>} The signed-in user or null.
-   */
-  async isSignedIn(): Promise<string | null> {
-    try {
-      const msal = await this.getMsal();
-      const accounts = msal.getAllAccounts();
-      if (accounts.length) { this._account = accounts[0]; return this.getSignedInUser(this._account); }
-      return null;
-    } catch { return null; }
-  }
-
-  /**
-   * getSignedInUser - Get the signed-in user.
-   * @returns {string | null} The signed-in user.
-   */
-  getSignedInUser(account: MsalAccount | null = this._account): string | null {
-    if (!account) return null;
-    return account.name ?? account.username;
-    this._userOid = account!.idTokenClaims.oid ?? account!.localAccountId ?? null;
-    return account!.name ?? account!.username;
-  }
-
-  /**
-   * oneDriveProxy - Proxy for OneDrive operations.
-   * @param root The root folder for the OneDrive operations.
-   * @param method The HTTP method for the request.
-   * @param payload The payload for the request.
-   * @returns {Promise<any>} The response from the OneDrive operations.
-   */
-  async oneDriveProxy(root: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer, mimeType?: string }) {
-    if (!this._userOid) await this.getAccessToken();
-    const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${root}`;
-
-    const { body, path, mimeType } = payload;
-
-    const headers: HeadersInit = {
-      'x-path': path || '',
-      'x-mime-type': mimeType || 'application/octet-stream',
-      'x-user': this._userOid?.toLowerCase() || '',
-    };
-
-    const response = await fetch(url, {
-      method: method,
-      headers: headers,
-      // data is sent as the raw binary body
-      body: body || null
-    });
-
-    if (root === 'fetch' && response.ok) return await response.blob();
-
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.message || 'Proxy Error');
-    return result;
-  }
-
-  /**
-   * Universal fetch for both Graph API and external URLs (GCF proxy).
-   * - If url starts with 'https://' it is used verbatim (external call).
-   * - Otherwise it is appended to the Graph base URL.
-   * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
-   */
-  async gFetch(
-    path: string,
-    opts: RequestInit = {},
-    rawBody = false,
-  ): Promise<Response> {
-    if (path !== ClaudeAPI.PROXY && !this._token) await this.getAccessToken();
-
-    const url = path === ClaudeAPI.PROXY ? path : `${GRAPH}${path}`;
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this._token}`,
-      ...(opts.headers as Record<string, string> ?? {}),
-    };
-
-    if (!rawBody && opts.body && typeof opts.body === 'string') {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    const resp = await fetch(url, { ...opts, headers });
-    if (!resp.ok) {
-      let msg = resp.statusText;
-      try {
-        const e = (await resp.json()) as { error?: { message?: string } };
-        msg = e.error?.message ?? msg;
-      } catch {}
-      throw new Error(`Fetch ${resp.status}: ${msg}`);
-    }
-    return resp;
-  }
-
-  encode(odPath: string): string {
-    return odPath.split('/').map((seg) => encodeURIComponent(seg)).join('/');
-  }
-}
-
-class GraphAPI {
-  private GRAPH_API_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/";
-  private accessToken: string;
-  private sessionId: string;
-  private filePath: string;
-  private methods = {
-    post: 'POST',
-    put: 'PUT',
-    get: 'GET',
-    patch: 'PATCH',
-    delete: 'DELETE'
-  }
-
-  constructor(accessToken: string = '', filePath?: string, sessionId?: string) {
-    this.accessToken = accessToken;
-    this.filePath = filePath || '';
-    this.sessionId = sessionId || '';
-  }
-
-  async getAccessToken() {
-    return await new MSAL().getTokenWithMSAL()
-  }
-
-  /**
- * Creates a new Graph API File session and returns its id
- * @returns 
- */
-  async createFileSession(persist: Boolean = false) {
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/createSession`;
-    const body = { persistChanges: persist };
-
-    const response = await this.sendRequest(endPoint, this.methods.post, body, undefined, undefined, "Erro: Failed to create workbook session");
-
-    const session = await response?.json();
-    return session.id as string;
-  }
-
-  /**
-   * Closes the current Excel file session
-   */
-  async closeFileSession(sessionId: string) {
-    if (!this.filePath) return;
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/closeSession`;
-    const resp = await this.sendRequest(endPoint, this.methods.post, undefined, sessionId, undefined, 'Error closing the session');
-    if (resp) console.log(`The session was closed successfully! ${await resp.text()}`)
-  }
-
-  /**
-   * Returns all the rows of an Excel table in a workbook stored on OneDrive, using the Graph API
-   * @param {string} tableName - Name of the table to be fetched
-   * @param {boolean} headers - Its default value is true. If true, it calls the "/range" endpoint and returns the whole table including the headers row, otherwise, it calls the "/rows" endpoint and returns only the body (the rows) of the table. The structure of the date returned is different for each endpoint 
-   * @param {boolean} columns - If true it will return the columns
-   * @returns {any[][] | number | void} - All the rows (including the title) of the Excel table
-   */
-  async fetchExcelTable(tableName: string, headers: boolean = true, columns?: boolean): Promise<any[][] | void> {
-
-    let endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/`;
-
-    if (headers) endPoint += 'range';//The "range" endpoint returns all the table including the headers row
-    if (!headers) endPoint += 'rows';//The "rows" endpoint returns only  the body of the table without the headers
-    else if (columns) endPoint += 'columns';
-    const response = await this.sendRequest(endPoint, this.methods.get, undefined, undefined, undefined, `Error fetching row count`);
-
-    const data = await response?.json();
-    if (headers)
-      return data?.values as any[][];
-    else return data?.value.flatMap((row: any) => row.values) as any[][]//! the graph api returns an object with a "value" property which is an array of rows, each row is also an object with a "values" property which is an array of the cells values of the row. So we need to flatMap() the data to return an array of rows, each row being an array of cells values;
-  };
-
-  /**
-   * Filters an Excel table column based on the values
-   * @param {string} filePath - the full path and file name of the Excel workbook
-   * @param {string} tableName - the name of the table that will be filtered
-   * @param {string} columnName - the name of the column that will be filtered
-   * @param {string[]|number[]|boolean[]} values - the values based on which the column will be filtered
-   * @param {string} sessionId - the id of the current Excel file session
-   * @returns {string} 
-   */
-  async filterExcelTable(tableName: string, columnName: string, values: string[] | number[] | boolean[], sessionId: string = this.sessionId, onValues: boolean = true) {
-    if (!columnName || !values?.length || !this.filePath) return;
-
-    // Step 3: Apply filter using the column name
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/columns/${columnName}/filter/apply`;
-
-    let body;
-    if (onValues)
-      body = {
-        "criteria": {
-          "filterOn": "values",
-          "values": values,
-        }
-      };
-    else body = {
-      "criteria": {
-        "filterOn": "custom",
-        "criterion1": values[0],
-        "criterion2": values[1] || null,
-        "operator": "And",
-      }
-    }
-    const response = await this.sendRequest(endPoint, this.methods.post, body, sessionId, undefined, 'Error while applying filter to the Excel table');
-
-    if (response) console.log(`Filter successfully applied to column ${columnName}!`);
-
-  };
-
-  /**
-   * Returns the visible cells of a filtered Excel table using Graph API
-   * @param {string} tableName - the name of the table that will be filtered
-   * @param {string} sessionId - the id of the current Excel file session
-   * @returns {any[][]} - the visible cells of the filtered table
-   */
-  async getVisibleCells(tableName: string, sessionId?: string) {
-    if (!tableName || !this.filePath) return alert('Either the tableName or the filePath are mission or not valid');
-
-    // Step 3: Apply filter using the column name
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/range/visibleView`;
-    const response = await this.sendRequest(endPoint, this.methods.get, undefined, sessionId, undefined, "Error applying filter");
-    const data = await response?.json();
-    return data?.values as any[][];
-
-  };
-
-  /**
-   * Clears the filters on an Excel table using the Graph API
-   * @param {string} tableName - the name of the table that will be filtered
-   * @param {string} sessionId - the id of the current Excel file session
-   */
-  async clearFilterExcelTable(tableName: string, sessionId?: string) {
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/clearFilters`
-    await this.sendRequest(endPoint, this.methods.post, undefined, sessionId, undefined, "Erro: Failed to clear the Excel table filter");
-  };
-
-  /**
- * Adds a new row to the Excel table using the Grap API
- * @param {string} row - The row that will be added to the Excel table
- * @param {number} index - The index at which the row will be added
- * @param {string} tableName - The name of the Excel table
- * @param {string[]} tableTitles - The titles row of the Excel table. If provided, the table will be filtered after adding the new row is added
- * @returns 
- */
-  async addRowToExcelTable(row: any[], index: number | null, tableName: string, tableTitles?: string[]) {
-    if (!this.filePath || !tableName || !row?.length) return alert('The filePath or the tableName argument is missing or not valid');
-    const sessionId = this.sessionId || await this.createFileSession(true);
-    if (!sessionId) return alert('The sessionId is missing Check the console.log for more details');
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/rows`;//The url to add a row to the table
-
-    const body = {
-      index: index,
-      values: [row],
-    };
-
-    await this.clearFilterExcelTable(tableName, sessionId);//We clear the filtering of the table
-
-    const resp = await this.sendRequest(endPoint, this.methods.post, body, sessionId, undefined, "Error adding row to the Excel Table");
-
-    if (resp) console.log("Row added successfully!");
-
-    for (const index of [0, 1]) {
-      if (!tableTitles?.length) break;
-      await this.filterExcelTable(tableName, tableTitles[index], [row[index].toString()], sessionId);  //!We use "for of" loop because forEach doesn't await
-    }
-
-    await this.sortExcelTable(tableName, [[3, true]], false, sessionId);//We sort the table by the first column (the date column)
-    const visible = await this.getVisibleCells(tableName, sessionId);
-    return visible;
-  };
-
-  /**
-   * Updates a specific row in an Excel table using the file path.
-   * @param {string} workbookPath - 
-   * @param {string} tableName - The name of the table.
-   * @param {number} rowIndex - 0-based index of the row.
-   * @param {Array} values - 1D array of values for the row.
-   */
-  async updateExcelTableRow(tableName: string, rowIndex: number, values: any[]) {
-    if (!this.filePath || !tableName || !rowIndex || !values?.length) return alert('One of the arguments is missing or not valid');
-    const sessionId = await this.createFileSession(true);//!Persist must be true. Otherwise the changes will not be saved !
-    if (!sessionId) return alert('Failed to create a new Session');
-    const url = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/rows/itemAt(index=${rowIndex})`;
-
-    const body = {
-      values: [values] // API requires a 2D array
-    };
-
-    try {
-      const response = await this.sendRequest(url, this.methods.patch, body, sessionId, undefined, "Error while updating the Excel Table row's values");
-      if (response?.ok) alert('Successfully updated the Excel table')
-      await this.closeFileSession(sessionId);
-      const data = await response?.json();
-      console.log('Update Successful:', data);
-      return data;
-    } catch (err) {
-      await this.closeFileSession(sessionId);
-      this.throwAndAlert(`Update Failed: ${err}`);
-    }
-
-  };
-
-  throwAndAlert(message: string) {
-    console.log(message);
-    throw new Error(message);
-  }
-  /**
- * Creates an invoice Word document from the invoice Word template, then uploads it to the destination folder
- * @param {string} templatePath - The full path of the Word invoice template
- * @param {string} savePath - The full path of the destination folder where the new invoice will be saved
- * @param {string} lang - The language in which the invoice will be issued
- * @param {[string, string[][], number][]} tables - An array containing for each table: the title of the Word table, the data for the new Word table rows that will be added to the table, and the index of the row after which we will insert the new rows.
- * @param {[string, string][]} contentControls - The titles and text of each of the content controls that will be updated in the Word document. Each element of the array contains the title of the contentControl, and the text with which it will be filled.
- * @param {string[]} totalsLabels - The labels of the rows that will be formatted as totals
- * @returns 
- */
-  async createAndUploadDocumentFromTemplate(
-    templatePath: string,
-    savePath: string = this.filePath,
-    lang: string,
-    tables?: [string, string[][], number][],
-    contentControls?: { title?: string, nestedCtrls: [string, string][][] | [string, string][] },
-    totalsLabels?: string[]
-  ) {
-    if (!templatePath || !this.filePath) return;
-
-
-    const [xmlDocs, zip] = await this.getXmlDocs(templatePath);
-
-    if (!xmlDocs?.length) return;
-
-
-    xmlDocs.forEach(doc => editXML(doc));
-
-    const newblob = await this.convertXMLIntoBlob(xmlDocs, zip);
-    if (!newblob) return;
-    await this.uploadFileToOneDrive(newblob, savePath);
-
-    function editXML([doc, fileName]: [XMLDocument, string]) {
-      const xml = new XML(doc, lang);
-      editTables(xml, doc);
-
-      if (contentControls?.title)
-        editRepeatingControls(xml, contentControls, doc);
-      else
-        editContentControls(xml, contentControls?.nestedCtrls as [string, string][], doc);
-    };
-
-
-    function editTables(xml: XML, doc: XMLDocument) {
-      if (!tables) return;
-      const allTables = xml.getTables(doc);
-      tables.forEach(table => editTable(table));
-
-      function editTable([tableTitle, rows, index]: [string, string[][], number]) {
-        const table = xml.findTableByTitle(allTables, tableTitle);
-        if (!table) return;
-        const afterRow = xml.getTableRow(table, index);//We retrieve the table row below which we will insert the new rows
-        rows.forEach((row, index) => {
-          const newXmlRow = xml.insertRowAfter(table, afterRow, NaN, true) || table.appendChild(xml.createTableRow());
-          if (!newXmlRow) return;
-          const isTotal = totalsLabels?.includes(row[0]);
-          const isLast = index === rows.length - 1;
-          return editCells(newXmlRow, row, isLast, isTotal);
-        });
-        afterRow.remove();//We remove the first row when we finish
-      }
-
-      function editCells(tableRow: Element, values: string[], isLast: boolean = false, isTotal: boolean = false) {
-        const cells = xml.getRowCells(tableRow) || values.map(v => tableRow.appendChild(xml.createTableCell()));//getting all the cells in the row element
-
-        cells.forEach((cell, index) => {
-          const textElement = xml.getTextElement(cell, 0) || xml.appendParagraph(cell);
-          if (!textElement) return console.log('No text element was found !');
-          const pPr = xml.setTextLanguage(cell);//We call this here in order to set the language for all the cells. It returns the pPr element if any.
-          textElement.textContent = values[index];
-
-          (function totalsRowsFormatting() {
-            if (!isLast && !isTotal) return;
-            (function cellBackgroundColor() {
-              const tcPr = xml.getPropElement(cell, 0) || cell.prepend(xml.createPropElement(cell));
-              const shadow = xml.getShadowElement(tcPr, 0) || tcPr.appendChild(xml.createShadowElement());//Adding background color to cell
-              shadow.setAttributeNS(xml.schema, 'val', "clear");
-              shadow.setAttributeNS(xml.schema, 'fill', 'D9D9D9');
-            })();
-
-            (function paragraphStyle() {
-              if (!pPr) return console.log('No "w:pPr" or "w:rPr" property element was found !');
-              const style = xml.getParagraphStyle(pPr, 0) || pPr.appendChild(xml.createParagraphStyle());
-              style.setAttributeNS(xml.schema, 'val', xml.getStyle(index, isTotal && !isLast));
-            })();
-          })();
-        })
-      }
-    };
-
-    function editContentControls(xml: XML, contentControls: [string, string][] | undefined, parent: XMLDocument | Element) {
-      if (!contentControls?.length) return;
-      const ctrls = xml.getContentControls(parent);
-      contentControls
-        .forEach(([title, value]) => {
-          const sameTitle = xml.findContentControlsByTitle(ctrls, title) as Element[];//!we  retrieve all then XML ContentControls having the same title
-          sameTitle.forEach(control => xml.editContentControlText(control, value))
-        });
-    };
-
-    function editRepeatingControls(xml: XML, options: { title?: string, nestedCtrls: [string, string][][] | [string, string][] } | undefined, parent: XMLDocument) {
-      if (!options || !options.title || !options.nestedCtrls) return;
-
-      const title = options.title;
-      // We must assert the type here because options.nestedCtrls could be either the flat or nested array
-      const nestedCtrls = options.nestedCtrls as [string, string][][];
-
-      const allCtrls = xml.getContentControls(parent);
-
-      // Find the master layout we want to duplicate
-      const masterNodes = xml.findContentControlsByTitle(allCtrls, title) as Element[];
-      if (!masterNodes?.length) return;
-      const master = masterNodes[0];
-
-      // Process each array of data
-      nestedCtrls.forEach((controlData: [string, string][]) => {
-        // You must use cloneNode(true) for a deep clone of the content block
-        const clone = master.cloneNode(true) as Element;
-
-        // Recursively call your existing edit method, scoped strictly to the clone
-        editContentControls(xml, controlData, clone);
-
-        // Append this filled-out clone directly before the master template
-        master.insertAdjacentElement('afterend', clone);
-      });
-
-      // Finally, remove the empty master block so it doesn't render in the document
-      master.remove();
-    }
-
-  };
-
-  private async getXmlDocs(templatePath: string) {
-    const blob = await this.fetchFileFromOneDrive(templatePath);//!We must provide the Word templatePath not the Excel workbook path stored in the this.filePath variable
-    if (!blob) return [];
-    return await this.convertBlobIntoXML(blob);
-  }
-
-  /**
- * Converts the blob of a Word document into XML files: the XML for the document and the XMLs for the header and footer
- * @param blob - the blob of the file to be converted
- * @returns {[XMLDocument, JSZip]} - The xml document, and the zip containing all the xml files
- */
-  private async convertBlobIntoXML(blob: Blob): Promise<[[XMLDocument, string][], JSZip]> {
-
-    const arrayBuffer = await blob.arrayBuffer();
-
-    const zip = new JSZip();
-    await zip.loadAsync(arrayBuffer);
-    const zipFiles = Object.keys(zip.files);
-
-    const parser = new DOMParser();
-    const xmlFiles: [XMLDocument, string][] = [];
-
-    const Patterns = [
-      /^word\/document\.xml$/,
-      /^word\/header\d+\.xml$/,
-      /^word\/footer\d+\.xml$/
-    ];
-
-    const fileNames = zipFiles.filter(file => Patterns.find(pattern => pattern.test(file)));
-
-    for (const fileName of fileNames) {
-      const file = await getXmlFromZip(fileName);
-      if (file) xmlFiles.push([file, fileName.replace(/^word\//, '')])
-    }
-
-    return [xmlFiles, zip];
-
-    async function getXmlFromZip(fileName: string): Promise<XMLDocument | null> {
-      const content = await zip.file(fileName)?.async("string");
-      if (!content) return null
-      return parser.parseFromString(content, "application/xml");
-    }
-  }
-
-  /**
- * Filters an Excel table column based on the values
- * @param {string} tableName - the name of the table that will be filtered
- * @param {[string, boolean][]} columns - each element contains the name of the column and whether it will be sorted ascending or descending
- * @param {string} sessionId - the id of the current Excel file session
- * @returns {string} 
- */
-  private async sortExcelTable(tableName: string, columns: [number, boolean][], matchCase: boolean, sessionId?: string) {
-    if (!this.filePath) return;
-
-    // Step 3: Apply filter using the column name
-    const endPoint = `${this.GRAPH_API_BASE_URL}${this.filePath}:/workbook/tables/${tableName}/sort/apply`;
-
-    const fields = columns.map(([index, ascending]) => {
-      return {
-        key: index,
-        ascending: ascending,
-        sortOn: "value"
-      }
-    });
-
-    const body = {
-      fields: fields,
-      "matchCase": matchCase
-    }
-
-    const resp = await this.sendRequest(endPoint, this.methods.post, body, sessionId, undefined, "Error sorting table");
-
-    if (resp)
-      console.log(`Table successfully sorted according to columns criteria: ${columns.map(([col, asc]) => col).join(' & ')}!`);
-
-  };
-
-  /**
- * Returns a blob from a file stored on OneDrive, using the Graph API and the file path
- * @param {string} filePath 
- * @returns {Blob} - A blob of the fetched file, if successful
- */
-  private async fetchFileFromOneDrive(filePath = this.filePath): Promise<Blob | undefined> {
-    const endPoint = `${this.GRAPH_API_BASE_URL}${filePath}:/content`;
-    const response = await this.sendRequest(endPoint, this.methods.get, undefined, undefined, undefined, "Failed to fetch Word template");
-    return await response?.blob(); // Returns the Word template as a Blob
-  };
-
-  /**
- * Uploads a file blob to OneDrive using the Graph API
- * @param {Blob } blob 
- * @param {string} filePath 
- */
-  private async uploadFileToOneDrive(blob: Blob, filePath: string) {
-    if (!filePath) return;
-    const endpoint = `${this.GRAPH_API_BASE_URL}${filePath}:/content`
-    const contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-    const response = await this.sendRequest(endpoint, this.methods.put, blob, undefined, contentType, 'Failed to upload the Word file to OneDrive')
-
-    if (response?.ok)
-      alert('succefully uploaded the new file');
-    else console.log('failed to upload the file to onedrive error = ', await response?.json())
-  };
-
-  /**
-   * Adds files (or replaces the existing files if the fileName is the same) in the zip folder
-   * @param {XMLDocument, string} docs - the XMLDocument we want to add to the zip folder, and its fileName
-   * @param {JSZip} zip -the zip folder into which we want to add the XMLDocuments 
-   * @returns {blob} a blob of the zip folder (which is in our case a Word document)
-   */
-  private async convertXMLIntoBlob(docs: [XMLDocument, string][], zip: JSZip,) {
-    const serializer = new XMLSerializer();
-    docs.forEach(doc => serialize(doc))
-    return await zip.generateAsync({ type: "blob" });
-
-    function serialize([doc, fileName]: [XMLDocument, string]) {
-      const serialized = serializer.serializeToString(doc);
-      zip.file(`word/${fileName}`, serialized);
-    }
-  }
-
-  /**
-   * 
-   * @param {string} endPoint 
-   * @param {string} method 
-   * @param {object} body 
-   * @param {string} sessionId 
-   * @param {string} contentType 
-   * @param {string} message 
-   * @returns {Promise<Response | undefined>} 
-   */
-  async sendRequest(endPoint: string, method: string, body?: object | Blob | ArrayBuffer, sessionId?: string, contentType?: string, message = "") {
-    if (!this.accessToken) await this.getAccessToken() || '';
-    if (!this.accessToken) return alert('Could not get an accessToken');
-    const request: RequestInit = {
-      method: method,
-      headers: this.graphHeaders(sessionId, contentType)
-    };
-
-    if (body) {
-      if (body instanceof Blob || body instanceof ArrayBuffer) {
-        request.body = body; // Send raw binary
-      } else {
-        request.body = JSON.stringify(body); // Send JSON
-      }
-    }
-
-    const response = await fetch(endPoint, request);
-
-    if (response?.ok) return response;
-
-    message = `${message || `Error while sending ${method} request`}:\n ${await response?.text()}`;
-    if (sessionId) await this.closeFileSession(sessionId)
-    this.throwAndAlert(message)
-  };
-
-  /**
- * Returns the headers of the Microsoft Graph API calls
- */
-  private graphHeaders(sessionId?: string, contentType?: string) {
-    const headers: header = {
-      'Authorization': `Bearer ${this.accessToken}`,
-      'Content-Type': contentType || 'application/json',
-    };
-    if (sessionId) headers["workbook-session-id"] = sessionId;
-    return headers
-  }
-
-  private async getExcelTableRowsCount(filePath: string, tableName: string) {
-    const endPoint = `${this.GRAPH_API_BASE_URL}${filePath}:/workbook/tables/${tableName}/rows/$count`;
-    const response = await this.sendRequest(endPoint, this.methods.get)
-
-    if (response?.ok) {
-      const rowCount = await response?.text(); // The API returns a number as plain text
-      console.log(`Row count: ${rowCount}`);
-      return parseInt(rowCount, 10); // Convert to number
-    } else {
-      console.error("Error fetching row count:", await response?.text());
-      return null;
-    }
-  }
-}
 
 class MSAL {
-  private _app: MsalApp;
+  private _app: MsalApp = new msal.PublicClientApplication(this.msalConfig());
   private readonly _clientId: string = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
   private readonly _tenantID: string = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
   private readonly _redirectUri: string = "https://mbibawi.github.io/LexAssistant-PWA/"; //!must be the same domain as the app;
@@ -835,10 +83,10 @@ class MSAL {
 
   constructor(scopes: string[] = ["Files.ReadWrite"]) {
     this.loginRequest.scopes = scopes;
-    this._app = new msal.PublicClientApplication(this.msalConfig());
   }
 
   get msalApp() { return this._app };
+
 
   private msalConfig(): msalConfig {
     return {
@@ -854,15 +102,22 @@ class MSAL {
     }
   };
 
-  async getTokenWithMSAL() {
-    if (!this._app) return null;
-    return await this.acquireToken() || null;
-  };
+  private async init(): Promise<void> {
+    await this._app.initialize(); // required in MSAL browser v3+
+    const response = await this._app.handleRedirectPromise();
+    if (response?.account) {
+      this._app.setActiveAccount(response.account);
+    }
+  }
+
+
   // Function to check existing authentication context
   async acquireToken(): Promise<{ token: string; account: MsalAccount } | null | void> {
+    await this.init();
     try {
       const account = this._app.getAllAccounts()[0];
       if (account) {
+        this._app.setActiveAccount(account);
         return await this.acquireTokenSilently(account);
       } else {
         return await this.loginWithPopup();
@@ -915,7 +170,7 @@ class MSAL {
         scopes: ["Files.ReadWrite"]
       });
       console.log("Token acquired via popup:", response.accessToken);
-      return this.acquireToken();
+      return { token: response.accessToken, account: this._app.getActiveAccount() };
     }
   }
 
@@ -1058,6 +313,166 @@ class MSAL {
 
 }
 
+
+// ─── OneDriveAuth — MSAL auth + raw Graph/proxy fetch ────────────────────────
+
+export class OneDriveAuth {
+  private readonly GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
+  private readonly CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
+  readonly cfg: Configuration = new Configuration();
+  private _scopes: string[] = ['Files.ReadWrite', 'User.Read', 'openid', 'profile'];
+  private readonly _MSAL: MSAL = new MSAL();
+  private _token: string | null = null;
+  private _account: MsalAccount | null = null;
+  private _userOid: string | null = null;
+
+
+  get account() { return this._account; }
+  get userOid() { return this._userOid; }
+  get token() { return this._token; }
+  get config() { return this.cfg.config; }
+  get isConfigured() { return this.cfg.isConfigured(); }
+  get root() { return this.cfg.root(); }
+  setConfig(cfg: OneDriveConfig) { this.cfg.setConfig(cfg); }
+
+
+  /**
+   * getAccessToken - Get the access token for the current user.
+   * @returns {Promise<string>} The access token.
+   */
+  private async getAccessToken(): Promise<string | null> {
+    return this.signIn();
+  }
+
+  /**
+   * signIn - Sign in to OneDrive.
+   * @returns {Promise<void>}
+   */
+  async signIn(): Promise<string | null> {
+    const acquired = await this._MSAL.acquireToken();
+    this._token = acquired?.token || null;
+    this._account = acquired?.account || null;
+    this._token ? alert(`Signed in successfully` + this._token) : alert(`Failed to sign in`);
+    return this._token;
+  }
+
+  /**
+   * signOut - Sign out of OneDrive.
+   * @returns {Promise<void>}
+   */
+  async signOut(): Promise<void> {
+    this._account = null;
+    this._token = null;
+    sessionStorage.clear();
+  }
+
+  /**
+   * isSignedIn - Check if the user is signed in.
+   * @returns {Promise<string | null>} The signed-in user or null.
+   */
+  async isSignedIn(): Promise<string | null> {
+    try {
+      const accounts = this._MSAL.msalApp.getAllAccounts();
+      if (accounts.length) {
+        this._account = accounts[0];
+        return this._account.name ?? this._account.username;
+      }
+      return null;
+    } catch { return null; }
+  }
+
+
+
+  /**
+   * oneDriveProxy - Proxy for OneDrive operations.
+   * @param root The root folder for the OneDrive operations.
+   * @param method The HTTP method for the request.
+   * @param payload The payload for the request.
+   * @returns {Promise<any>} The response from the OneDrive operations.
+   */
+  async oneDriveProxy(root: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
+    if (!this.account) await this.getAccessToken();
+    console.log('user oid = ', this.account?.idTokenClaims.oid)
+    const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${root}`;
+
+    const { body, path, mimeType } = payload;
+
+    const headers: HeadersInit = {
+      'x-path': path || '',
+      'x-mime-type': mimeType || 'application/octet-stream',
+      'x-user': this.account?.idTokenClaims.oid.toLowerCase() || '',
+    };
+
+    const response = await fetch(url, {
+      method: method,
+      headers: headers,
+      // data is sent as the raw binary body
+      body: body || null
+    });
+
+    if (root === 'fetch' && response.ok) return await response.blob();
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || 'Proxy Error');
+    return result;
+  }
+
+  async callClaudeProxy(api: string, body: string) {
+    return await this.gFetch(
+      `${this.CLAUDE_PROXY}${api}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2024-06-01',
+        },
+        body: body,
+      },
+      true, // rawBody: skip gFetch Graph header injection
+    );
+  }
+
+  /**
+   * Universal fetch for both Graph API and external URLs (GCF proxy).
+   * - If url starts with 'https://' it is used verbatim (external call).
+   * - Otherwise it is appended to the Graph base URL.
+   * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
+   */
+  async gFetch(
+    path: string,
+    opts: RequestInit = {},
+    rawBody = false,
+  ): Promise<Response> {
+
+    if (!path.startsWith(this.CLAUDE_PROXY) && !this._token) await this.getAccessToken();
+    const url = path.startsWith(this.CLAUDE_PROXY) ? path : `${this.GRAPH}${path}`;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this._token}`,
+      ...(opts.headers as Record<string, string> ?? {}),
+    };
+
+    if (!rawBody && opts.body && typeof opts.body === 'string') {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const resp = await fetch(url, { ...opts, headers });
+    if (!resp.ok) {
+      let msg = resp.statusText;
+      try {
+        const e = (await resp.json()) as { error?: { message?: string } };
+        msg = e.error?.message ?? msg;
+      } catch { }
+      throw new Error(`Fetch ${resp.status}: ${msg}`);
+    }
+    return resp;
+  }
+
+  encode(odPath: string): string {
+    return odPath.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+  }
+}
+
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
 
 class Folders extends OneDriveAuth {
@@ -1166,10 +581,15 @@ class Folders extends OneDriveAuth {
       await this.writeFilePath(filePath, data, mimeType);
       return;
     }
-    const sessResp = await this.gFetch(`${this.encode(filePath)}/createUploadSession`, {
+    const sessResp = await this.oneDriveProxy('save', 'POST', {
+      path: `${filePath}/createUploadSession`,
+      body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
+      mimeType
+    });
+    /*const sessResp = await this.gFetch(`${this.encode(filePath)}/createUploadSession`, {
       method: 'POST',
       body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
-    });
+    });*/
     const { uploadUrl } = (await sessResp.json()) as { uploadUrl: string };
     const chunk = 10 * 1024 * 1024;
     for (let off = 0; off < data.byteLength; off += chunk) {
@@ -1222,7 +642,6 @@ class Folders extends OneDriveAuth {
   }
 }
 
-
 // ─── Scenario — shared: skills, OD status, UI helpers ────────────────────────
 
 abstract class Common extends Folders {
@@ -1274,11 +693,12 @@ abstract class Common extends Folders {
   updateODStatus(): void {
     const statusEl = byID(ids.oneDriveStatus);
     if (!statusEl) return;
-    if (oneDrive.userOid) {
-      statusEl.textContent = `☁ ${oneDrive.getSignedInUser(oneDrive.account)}`;
+    const userName = oneDrive.isSignedIn();
+    if (userName) {
+      statusEl.textContent = `☁ ${userName}`;
       statusEl.className = 'od-status od-status--connected';
     } else {
-      statusEl.textContent = oneDrive.userOid ? '☁ Non connecté' : '☁ Non configuré';
+      statusEl.textContent = '☁ Non connecté';
       statusEl.className = 'od-status od-status--disconnected';
     }
   }
@@ -1313,7 +733,7 @@ abstract class Common extends Folders {
 
   openSettingsModal(): void {
     byID(ids.settingsOverlay)?.remove();
-    const userName = oneDrive.getSignedInUser(oneDrive.account);
+    const userName = oneDrive.isSignedIn();
     const overlay = el('div', { className: 'modal-overlay', id: ids.settingsOverlay });
     const dialog = el('div', { className: 'modal-dialog modal-dialog--settings' });
     dialog.innerHTML = `
@@ -1426,6 +846,7 @@ abstract class Common extends Folders {
     return typing;
   }
 }
+
 
 // ─── Cases — dossiers scenario ────────────────────────────────────────────────
 
@@ -2316,7 +1737,7 @@ export class Library extends Common {
   // ─── Sync from OneDrive ───────────────────────────────────────────────────
 
   async syncDomainFromOneDrive(domain: LibDomain): Promise<number> {
-    if (!oneDrive.account) await oneDrive.signIn(null);
+    if (!oneDrive.account) await oneDrive.signIn();
     //if (!oneDrive.userOid) await oneDrive.signIn(this.msal);
     const items = await this.listLibFiles(domain);
     const existing = await this.loadDomainMeta(domain);
@@ -2614,3 +2035,4 @@ export class Library extends Common {
     });
   }
 }
+

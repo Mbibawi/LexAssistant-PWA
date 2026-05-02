@@ -312,7 +312,7 @@ class GraphAPI {
         this.sessionId = sessionId || '';
     }
     async getAccessToken() {
-        return await new MSAL().getTokenWithMSAL();
+        return await new MSAL().acquireToken();
     }
     /**
    * Creates a new Graph API File session and returns its id
@@ -776,14 +776,13 @@ class GraphAPI {
     }
 }
 class MSAL {
-    _app;
+    _app = new msal.PublicClientApplication(this.msalConfig());
     _clientId = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
     _tenantID = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
     _redirectUri = "https://mbibawi.github.io/LexAssistant-PWA/"; //!must be the same domain as the app;
     loginRequest = { scopes: [''] };
     constructor(scopes = ["Files.ReadWrite"]) {
         this.loginRequest.scopes = scopes;
-        this._app = new msal.PublicClientApplication(this.msalConfig());
     }
     get msalApp() { return this._app; }
     ;
@@ -801,14 +800,16 @@ class MSAL {
         };
     }
     ;
-    async getTokenWithMSAL() {
-        if (!this._app)
-            return null;
-        return await this.acquireToken() || null;
+    async init() {
+        await this._app.initialize(); // required in MSAL browser v3+
+        const response = await this._app.handleRedirectPromise();
+        if (response?.account) {
+            this._app.setActiveAccount(response.account);
+        }
     }
-    ;
     // Function to check existing authentication context
     async acquireToken() {
+        await this.init();
         try {
             const account = this._app.getAllAccounts()[0];
             if (account) {

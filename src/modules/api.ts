@@ -125,7 +125,6 @@ ${permanentInstructions()}`;
 // ─── ClaudeAPI ────────────────────────────────────────────────────────────────
 
 export class ClaudeAPI {
-  static readonly PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy';
   // ─── Constants ────────────────────────────────────────────────────────────────
   protected readonly PATH = 'v1/messages';
   protected readonly MODEL = 'claude-sonnet-4-6';
@@ -137,19 +136,12 @@ export class ClaudeAPI {
    * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
    * and inject the anthropic-version header ourselves since gFetch won't add it.
    */
-  private async callGoogleProxy(messages: ClaudeMessages, api: string = 'claude'): Promise<ClaudeResponse> {
-    const resp = await oneDrive.gFetch(
-      `${ClaudeAPI.PROXY}/api/proxy/${api}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2024-06-01',
-        },
-        body: JSON.stringify({ path: this.PATH, messages: messages }),
-      },
-      true, // rawBody: skip gFetch Graph header injection
-    );
+  private async callProxy(messages: ClaudeMessages, api: string = 'claude'): Promise<ClaudeResponse> {
+    const resp = await oneDrive.callClaudeProxy(
+      api,
+      JSON.stringify({ path: this.PATH, messages: messages }
+      ));
+
     if (!resp.ok) {
       const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
       throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
@@ -285,7 +277,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   }
 
   private async getMarkdown(docParts: ContentPart[], prompt: string) {
-    const data = await this.callGoogleProxy(
+    const data = await this.callProxy(
       this.claudeBody(8000, [{
         role: 'user',
         content: [...docParts, { type: 'text', text: prompt }],
@@ -318,7 +310,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
       content = [...docParts, { type: 'text', text: opts.userMessage }];
     }
 
-    const data = await this.callGoogleProxy(
+    const data = await this.callProxy(
       this.claudeBody(4096, [{ role: 'user', content }], system),
     );
     return this.extractText(data);
@@ -354,7 +346,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
       ]
       : [{ role: 'user', content: [...firstUserContent, { type: 'text', text: opts.userMessage }] as unknown as string }];
 
-    const data = await this.callGoogleProxy(this.claudeBody(4096, messages, system));
+    const data = await this.callProxy(this.claudeBody(4096, messages, system));
     return this.extractText(data);
   }
 
@@ -368,7 +360,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     system: string,
     contextParts: ContentPart[] = [],
   ): Promise<string> {
-    const data = await this.callGoogleProxy(
+    const data = await this.callProxy(
       this.claudeBody(
         6000,
         [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] as unknown as string }],

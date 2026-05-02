@@ -35,6 +35,7 @@ type MsalApp = {
   loginRedirect(r: { scopes: string[]; prompt?: string }): Promise<void>;
   ssoSilent(r: { scopes: string[]; loginHint?: string }): Promise<{ account?: MsalAccount, accessToken?: string }>;
   setActiveAccount(account: MsalAccount): void
+  getActiveAccount(): MsalAccount
   }
 
 type MsalAccount = {
