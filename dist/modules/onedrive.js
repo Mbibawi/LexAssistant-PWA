@@ -779,12 +779,11 @@ class MSAL {
     _app;
     _clientId = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
     _tenantID = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
-    _redirectUri = "https://mbibawi.github.io/LexAssistant-PWA"; //!must be the same domain as the app;
+    _redirectUri = "https://mbibawi.github.io/LexAssistant-PWA/"; //!must be the same domain as the app;
     loginRequest = { scopes: [''] };
     constructor(scopes = ["Files.ReadWrite"]) {
         this.loginRequest.scopes = scopes;
         this._app = new msal.PublicClientApplication(this.msalConfig());
-        this._app.initialize();
     }
     get msalApp() { return this._app; }
     ;
