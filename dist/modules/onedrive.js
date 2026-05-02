@@ -69,10 +69,10 @@ class Configuration {
     root() { return this.config?.rootFolder ?? APP_ROOT; }
 }
 class MSAL {
-    _app = new msal.PublicClientApplication(this.msalConfig());
     _clientId = "9cb553c1-8473-4b2a-91d4-fef8b7cd7bff";
     _tenantID = "f45eef0e-ec91-44ae-b371-b160b4bbaa0c";
     _redirectUri = "https://mbibawi.github.io/LexAssistant-PWA/"; //!must be the same domain as the app;
+    _app = new msal.PublicClientApplication(this.msalConfig()); //!this must come after clientId and redirectUri are delcared
     loginRequest = { scopes: [''] };
     constructor(scopes = ["Files.ReadWrite"]) {
         this.loginRequest.scopes = scopes;
