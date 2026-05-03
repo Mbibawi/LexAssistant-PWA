@@ -85,7 +85,10 @@ async function fetchFileFromOneDrive(req, res) {
  */
 async function request(req, contentType, body) {
     const userOid = req.header['x-user'];
-    const accessToken = await getMicrosoftAccessToken(userOid);
+    if (userOid !== process.env.USER)
+        return 'User not authorized';
+    const accessToken = req.header['x-token'];
+    //const accessToken = await getMicrosoftAccessToken(userOid);
     if (!accessToken)
         throw new Error('Microsoft access token not found');
     const headers = {

@@ -357,21 +357,22 @@ export class OneDriveAuth {
     }
     /**
      * oneDriveProxy - Proxy for OneDrive operations.
-     * @param root The root folder for the OneDrive operations.
+     * @param roote The root folder for the OneDrive operations.
      * @param method The HTTP method for the request.
      * @param payload The payload for the request.
      * @returns {Promise<any>} The response from the OneDrive operations.
      */
-    async oneDriveProxy(root, method, payload) {
+    async oneDriveProxy(roote, method, payload) {
         if (!this.account)
             await this.getAccessToken();
         console.log('user oid = ', this.account?.idTokenClaims.oid);
-        const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${root}`;
+        const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
         const { body, path, mimeType } = payload;
         const headers = {
             'x-path': path || '',
             'x-mime-type': mimeType || 'application/octet-stream',
-            'x-user': this.account?.idTokenClaims.oid.toLowerCase() || '',
+            'x-user': this.account?.idTokenClaims.oid || '',
+            'x-token': this._token || '',
         };
         const response = await fetch(url, {
             method: method,
@@ -379,7 +380,7 @@ export class OneDriveAuth {
             // data is sent as the raw binary body
             body: body || null
         });
-        if (root === 'fetch' && response.ok)
+        if (roote === 'fetch' && response.ok)
             return await response.blob();
         const result = await response.json();
         if (!response.ok)

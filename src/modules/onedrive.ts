@@ -390,22 +390,23 @@ export class OneDriveAuth {
 
   /**
    * oneDriveProxy - Proxy for OneDrive operations.
-   * @param root The root folder for the OneDrive operations.
+   * @param roote The root folder for the OneDrive operations.
    * @param method The HTTP method for the request.
    * @param payload The payload for the request.
    * @returns {Promise<any>} The response from the OneDrive operations.
    */
-  async oneDriveProxy(root: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
+  async oneDriveProxy(roote: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
     if (!this.account) await this.getAccessToken();
     console.log('user oid = ', this.account?.idTokenClaims.oid)
-    const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${root}`;
+    const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
 
     const { body, path, mimeType } = payload;
 
     const headers: HeadersInit = {
       'x-path': path || '',
       'x-mime-type': mimeType || 'application/octet-stream',
-      'x-user': this.account?.idTokenClaims.oid.toLowerCase() || '',
+      'x-user': this.account?.idTokenClaims.oid || '',
+      'x-token': this._token || '',
     };
 
     const response = await fetch(url, {
@@ -415,7 +416,7 @@ export class OneDriveAuth {
       body: body || null
     });
 
-    if (root === 'fetch' && response.ok) return await response.blob();
+    if (roote === 'fetch' && response.ok) return await response.blob();
 
     const result = await response.json();
     if (!response.ok) throw new Error(result.message || 'Proxy Error');
