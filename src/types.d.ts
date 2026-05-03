@@ -120,10 +120,10 @@ type PermanentNote = {
 // ─── _conversation.json — chat history, stored in case / library folder ───────
 
 type ConversationFile = {
-  messages: ChatMessage[];
+  messages: CaseMessage[];
 }
 
-type ChatMessage = {
+type CaseMessage = {
   id?: string;
   role: ChatRole;
   content: string | ContentPart[];
@@ -131,6 +131,14 @@ type ChatMessage = {
   mode?: WorkMode;
   generatedDocName?: string;
 };
+
+type LibMessage = {
+  id: string;
+  role: ChatRole;
+  content: string;
+  timestamp: number;
+  domain: LibDomain | 'all';
+}
 
 // ─── In-memory case object (assembled from CaseMeta + folder listing) ─────────
 
@@ -160,13 +168,6 @@ type LibDomainMeta = {
   documents: LibDocumentMeta[];
 }
 
-type LibConversationMessage = {
-  id: string;
-  role: ChatRole;
-  content: string;
-  timestamp: number;
-  domain: LibDomain | 'all';
-}
 
 // ─── OneDrive / Graph ─────────────────────────────────────────────────────────
 
@@ -206,7 +207,7 @@ type ClaudeMessages = {
     text: string;
     cache_control?: { type: string; ttl: string };
   }[];
-  messages: ChatMessage[];
+  messages: CaseMessage[];
 };
 
 type ClaudeResponse = {
