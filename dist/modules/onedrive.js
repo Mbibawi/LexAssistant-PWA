@@ -471,8 +471,8 @@ class Folders extends OneDriveAuth {
      * @param folderPath The path to the folder.
      */
     async listAllFolderItems(folderPath) {
-        return this.oneDriveProxy('list', 'GET', { path: folderPath });
-        const resp = await this.gFetch(`${this.encode(folderPath)}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
+        //return this.oneDriveProxy('list', 'GET', { path: folderPath });
+        const resp = await this.gFetch(`${folderPath}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
         const data = (await resp.json());
         return data.value ?? [];
     }
@@ -520,8 +520,8 @@ class Folders extends OneDriveAuth {
      * @returns A Promise that resolves to the content of the file as an ArrayBuffer.
      */
     async readFilePath(filePath) {
-        return this.oneDriveProxy('fetch', 'GET', { path: filePath });
-        const resp = await this.gFetch(`${this.encode(filePath)}:/content`);
+        //return this.oneDriveProxy('fetch', 'GET', { path: filePath });
+        const resp = await this.gFetch(`${filePath}:/content`);
         if (!resp.ok)
             throw new Error(`Read ${filePath}: ${resp.status}`);
         return resp.arrayBuffer();
@@ -545,15 +545,15 @@ class Folders extends OneDriveAuth {
             await this.writeFilePath(filePath, data, mimeType);
             return;
         }
-        const sessResp = await this.oneDriveProxy('save', 'POST', {
-            path: `${filePath}/createUploadSession`,
-            body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
-            mimeType
-        });
-        /*const sessResp = await this.gFetch(`${this.encode(filePath)}/createUploadSession`, {
-          method: 'POST',
+        /*const sessResp = await this.oneDriveProxy('save', 'POST', {
+          path: `${filePath}/createUploadSession`,
           body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
+          mimeType
         });*/
+        const sessResp = await this.gFetch(`${filePath}/createUploadSession`, {
+            method: 'POST',
+            body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
+        });
         const { uploadUrl } = (await sessResp.json());
         const chunk = 10 * 1024 * 1024;
         for (let off = 0; off < data.byteLength; off += chunk) {
@@ -575,16 +575,16 @@ class Folders extends OneDriveAuth {
      */
     async writeFilePath(filePath, data, mimeType) {
         const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
-        await this.gFetch(`${this.encode(filePath)}/content`, {
+        //return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
+        await this.gFetch(`${this.encode(filePath)}:/content`, {
             method: 'PUT',
             headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
             body,
         }, true);
     }
     async deleteFilePath(filePath) {
-        return this.oneDriveProxy('delete', 'DELETE', { path: filePath });
-        await this.gFetch(`${this.encode(filePath)}`, { method: 'DELETE' });
+        //return this.oneDriveProxy('delete', 'DELETE', { path: filePath });
+        await this.gFetch(`${filePath}`, { method: 'DELETE' });
     }
     async readAppConfig() {
         return this.readJson(this.appConfigPath);
