@@ -457,7 +457,7 @@ class Folders extends OneDriveAuth {
         const parts = folderPath.split('/');
         const name = parts.pop();
         const parentPath = parts.join('/');
-        const parentEndpoint = parentPath ? `${parentPath}/children` : 'children';
+        const parentEndpoint = parentPath ? `${parentPath}:/children` : ':children';
         const resp = await this.gFetch(parentEndpoint, {
             method: 'POST',
             body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
