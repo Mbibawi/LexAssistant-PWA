@@ -2,8 +2,9 @@ import { Document, Packer, Paragraph, TextRun } from 'docx';
 const endPoint = (path: string) => `https://graph.microsoft.com/v1.0/me/drive/root:/${path}`
 
 export const proxyHandler = async (req: any, res: any) => {
-    if (!req.headers['x-token']) res.status(404).json({ error: 'the accessToken is missing' });
-    if (!req.headers['x-user']) res.status(404).json({ error: 'the user oid is missing' });
+    if (!req.headers['x-token']) return res.status(404).json({ error: 'the accessToken is missing' });
+    if (!req.headers['x-user']) return res.status(404).json({ error: 'the user oid is missing' });
+    if (req.headers['x-user'] !== process.env.USER) return res.status(404).json({ error: 'the user oid is not allowed' });
     const path = req.path;
     const method = req.method;
 
@@ -15,6 +16,12 @@ export const proxyHandler = async (req: any, res: any) => {
     })();
 
     try {
+        // Handle preflight
+        if (req.method === 'OPTIONS') {
+            res.status(204).send('');
+            return;
+        }
+
         if (path === '/api/proxy/docx' && method === 'PUT') {
             return await createAndUploadDocx(req, res);
         }
@@ -35,10 +42,6 @@ export const proxyHandler = async (req: any, res: any) => {
             return await fetchFileFromOneDrive(req, res);
         }
 
-        if (req.method === 'OPTIONS') {
-            res.status(204).send('');
-            return;
-        }
 
         res.status(404).json({ error: 'Endpoint not found or method mismatch' });
     } catch (error: any) {
@@ -122,8 +125,6 @@ async function fetchFileFromOneDrive(req: any, res: any) {
  * Helpers
  */
 async function request(req: any, contentType?: string, body?: any) {
-    const userOid = req.headers['x-user'];
-    if (userOid !== process.env.USER) return 'User not authorized';
     const accessToken = req.headers['x-token'];
     //const accessToken = await getMicrosoftAccessToken(userOid);
     if (!accessToken) throw new Error('Microsoft access token not found');
