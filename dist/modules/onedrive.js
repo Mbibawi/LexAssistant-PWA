@@ -575,7 +575,7 @@ class Folders extends OneDriveAuth {
      */
     async writeFilePath(filePath, data, mimeType) {
         const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        return this.oneDriveProxy('save', 'POST', { path: filePath, body, mimeType });
+        return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
         await this.gFetch(`${this.encode(filePath)}/content`, {
             method: 'PUT',
             headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },

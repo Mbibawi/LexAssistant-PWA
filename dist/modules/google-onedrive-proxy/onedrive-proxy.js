@@ -1,8 +1,18 @@
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 const endPoint = (path) => `https://graph.microsoft.com/v1.0/me/drive/root:/${path}`;
 export const proxyHandler = async (req, res) => {
+    if (!req.headers['x-token'])
+        res.status(404).json({ error: 'the accessToken is missing' });
+    if (!req.headers['x-user'])
+        res.status(404).json({ error: 'the user oid is missing' });
     const path = req.path;
     const method = req.method;
+    (function CORS() {
+        // Add CORS headers (Allow requests from the LexAssistant PWA)
+        res.set('Access-Control-Allow-Origin', 'https://mbibawi.github.io');
+        res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.set('Access-Control-Allow-Headers', 'Content-Type, x-token, x-user');
+    })();
     try {
         if (path === '/api/proxy/docx' && method === 'PUT') {
             return await createAndUploadDocx(req, res);
@@ -18,6 +28,10 @@ export const proxyHandler = async (req, res) => {
         }
         if (path === '/api/proxy/fetch' && method === 'GET') {
             return await fetchFileFromOneDrive(req, res);
+        }
+        if (req.method === 'OPTIONS') {
+            res.status(204).send('');
+            return;
         }
         res.status(404).json({ error: 'Endpoint not found or method mismatch' });
     }
@@ -84,10 +98,10 @@ async function fetchFileFromOneDrive(req, res) {
  * Helpers
  */
 async function request(req, contentType, body) {
-    const userOid = req.header['x-user'];
+    const userOid = req.headers['x-user'];
     if (userOid !== process.env.USER)
         return 'User not authorized';
-    const accessToken = req.header['x-token'];
+    const accessToken = req.headers['x-token'];
     //const accessToken = await getMicrosoftAccessToken(userOid);
     if (!accessToken)
         throw new Error('Microsoft access token not found');
