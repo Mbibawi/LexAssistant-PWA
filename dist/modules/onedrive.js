@@ -421,7 +421,8 @@ export class OneDriveAuth {
                 msg = e.error?.message ?? msg;
             }
             catch { }
-            throw new Error(`Fetch ${resp.status}: ${msg}`);
+            console.log(`Fetch ${resp.status}: ${msg}`);
+            //throw new Error(`Fetch ${resp.status}: ${msg}`);
         }
         return resp;
     }
@@ -445,11 +446,11 @@ class Folders extends OneDriveAuth {
      */
     async ensureFolder(folderPath) {
         try {
-            await this.gFetch(folderPath);
-            return;
+            const resp = await this.gFetch(folderPath);
+            if (!resp.ok)
+                await this.createFolder(folderPath);
         }
         catch {
-            this.createFolder(folderPath);
         }
     }
     async createFolder(folderPath) {
@@ -457,10 +458,12 @@ class Folders extends OneDriveAuth {
         const name = parts.pop();
         const parentPath = parts.join('/');
         const parentEndpoint = parentPath ? `${parentPath}/children` : 'children';
-        await this.gFetch(parentEndpoint, {
+        const resp = await this.gFetch(parentEndpoint, {
             method: 'POST',
             body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
         });
+        if (!resp.ok)
+            alert('Failed to create a new folder at: \n' + folderPath);
     }
     /**
      * List all items in a folder.
