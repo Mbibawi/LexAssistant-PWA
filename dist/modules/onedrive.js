@@ -326,7 +326,7 @@ export class OneDriveAuth {
         const acquired = await this._MSAL.acquireToken();
         this._token = acquired?.token || null;
         this._account = acquired?.account || null;
-        this._token ? alert(`Signed in successfully` + this._token) : alert(`Failed to sign in`);
+        this._token ? alert(`Signed in successfully ${this._token.substring(0, 10)}...`) : alert(`Failed to sign in`);
         return this._token;
     }
     /**
@@ -445,14 +445,18 @@ class Folders extends OneDriveAuth {
      */
     async ensureFolder(folderPath) {
         try {
-            await this.gFetch(this.encode(folderPath));
+            await this.gFetch(folderPath);
             return;
         }
-        catch { }
+        catch {
+            this.createFolder(folderPath);
+        }
+    }
+    async createFolder(folderPath) {
         const parts = folderPath.split('/');
         const name = parts.pop();
         const parentPath = parts.join('/');
-        const parentEndpoint = parentPath ? `${this.encode(parentPath)}/children` : 'children';
+        const parentEndpoint = parentPath ? `${parentPath}/children` : 'children';
         await this.gFetch(parentEndpoint, {
             method: 'POST',
             body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),

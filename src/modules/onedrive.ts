@@ -357,7 +357,7 @@ export class OneDriveAuth {
     const acquired = await this._MSAL.acquireToken();
     this._token = acquired?.token || null;
     this._account = acquired?.account || null;
-    this._token ? alert(`Signed in successfully` + this._token) : alert(`Failed to sign in`);
+    this._token ? alert(`Signed in successfully ${this._token.substring(0, 10)}...`) : alert(`Failed to sign in`);
     return this._token;
   }
 
@@ -495,16 +495,25 @@ class Folders extends OneDriveAuth {
    * @param folderPath The path to the folder.
    */
   async ensureFolder(folderPath: string): Promise<void> {
-    try { await this.gFetch(this.encode(folderPath)); return; } catch { }
+    try {
+      await this.gFetch(folderPath);
+      return;
+    } catch {
+      this.createFolder(folderPath);
+    }
+  }
+
+  async createFolder(folderPath: string) {
     const parts = folderPath.split('/');
     const name = parts.pop()!;
     const parentPath = parts.join('/');
-    const parentEndpoint = parentPath ? `${this.encode(parentPath)}/children` : 'children';
+    const parentEndpoint = parentPath ? `${parentPath}/children` : 'children';
     await this.gFetch(parentEndpoint, {
       method: 'POST',
       body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
     });
   }
+
 
   /**
    * List all items in a folder.
@@ -1415,7 +1424,7 @@ export class Cases extends Common {
 
   private async openCaseFormModal(existing: FolderMeta | null): Promise<void> {
     if (!oneDrive.account) await oneDrive.signIn();
-  //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
+    //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
     const isEdit = !!existing;
     const overlay = el('div', { className: 'modal-overlay' });
     document.body.appendChild(overlay);
