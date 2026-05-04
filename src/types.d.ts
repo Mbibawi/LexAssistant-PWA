@@ -87,11 +87,13 @@ type LibCallOpts = {
 
 
 type DocumentMeta = {
+  id?: string | null;
   name: string;
   mimeType: string;
   sizeBytes: number;
   kind?: DocKind;
   addedAt: number;
+  size?: number;
   tags?: string[];
 }
 
@@ -141,6 +143,7 @@ type FolderMeta = {
 // ─── OneDrive / Graph ─────────────────────────────────────────────────────────
 
 type GraphDriveItem = {
+  id?: string;
   name: string;
   size: number;
   file?: { mimeType: string };

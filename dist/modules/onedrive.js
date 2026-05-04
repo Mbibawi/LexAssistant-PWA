@@ -25,7 +25,7 @@
  *     Bibliotheque/_conversation.json ← "all" domain conversation
  */
 import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
-import { isSupported, mimeLabel, mimeIcon, formatSize, makeDocMeta } from './ingest.js';
+import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
 import { oneDrive, ids } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
@@ -433,6 +433,18 @@ export class OneDriveAuth {
 }
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
 class Folders extends OneDriveAuth {
+    SUPPORTED_EXTS = {
+        pdf: 'application/pdf',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        doc: 'application/msword',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        xls: 'application/vnd.ms-excel',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ppt: 'application/vnd.ms-powerpoint',
+        txt: 'text/plain',
+        md: 'text/markdown',
+        rtf: 'application/rtf',
+    };
     get appConfigPath() {
         return `${this.root}/${APP_CONFIG_FILE}`;
     }
@@ -497,7 +509,37 @@ class Folders extends OneDriveAuth {
      */
     async listFiles(folderAbsPath) {
         const items = await this.listFolderItems(folderAbsPath);
-        return items.filter((i) => i.file);
+        return items.filter((i) => i.file).map(file => this.makeDocMeta(file));
+    }
+    makeDocMeta(item) {
+        return {
+            id: item.id ?? null,
+            name: item.name,
+            kind: this.guessKind(item.name),
+            mimeType: this.guessMime(item.name, item.file.mimeType),
+            sizeBytes: item.size,
+            addedAt: Date.now(),
+            size: item.size,
+            tags: [],
+        };
+    }
+    guessKind(name) {
+        const l = name.toLowerCase();
+        if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l))
+            return 'jurisprudence';
+        if (/doctrine|article|revue|doctr/.test(l))
+            return 'doctrine';
+        return 'piece';
+    }
+    guessMime(fileName, typehint = '') {
+        if (typehint)
+            return typehint;
+        const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+        return this.SUPPORTED_EXTS[ext] ?? 'application/octet-stream';
+    }
+    isSupported(name) {
+        const ext = name.split('.').pop()?.toLowerCase() ?? '';
+        return ext in this.SUPPORTED_EXTS;
     }
     /**
      * Reads a JSON file from the given file path.
@@ -978,6 +1020,7 @@ export class Cases extends Common {
         this._kb = null;
         this._notes = await this.readNotes(folderName);
         this._messages = await this.readConversation(folderName);
+        this._activeCase.documents = await this.listFiles(this.mainPath(this._activeCase.folderName));
         // Try to load the latest knowledge base silently
         const folderPath = this.mainPath(folderName);
         this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listFolderItems(folderPath), this.readFilePath);
@@ -997,14 +1040,14 @@ export class Cases extends Common {
         if (!this._activeCase)
             return await this.loadAllSubFolders();
         try {
-            const items = await this.listFiles(this.mainPath(this._activeCase.folderName));
+            const files = await this.listFiles(this.mainPath(this._activeCase.folderName));
             let added = 0;
-            for (const item of items) {
-                if (!item.file || !isSupported(item.name))
+            for (const file of files) {
+                if (!this.isSupported(file.name))
                     continue;
-                if (this._activeCase.documents.some((d) => d.name === item.name))
+                if (this._activeCase.documents.some((d) => d.name === file.name))
                     continue;
-                this._activeCase.documents.push(makeDocMeta(item));
+                this._activeCase.documents.push(file);
                 added++;
             }
             if (added > 0) {
@@ -1295,13 +1338,13 @@ export class Cases extends Common {
             if (!fi.files?.length || !this._activeCase)
                 return;
             for (const file of Array.from(fi.files)) {
-                if (!isSupported(file.name)) {
+                if (!this.isSupported(file.name)) {
                     toast(`Format non supporté : ${file.name}`, 'error');
                     continue;
                 }
                 try {
                     const ab = await file.arrayBuffer();
-                    const meta = makeDocMeta(file);
+                    const meta = this.makeDocMeta(file);
                     await this.writeCaseFile(this._activeCase.folderName, file.name, ab, meta.mimeType);
                     if (!this._activeCase.documents.some((d) => d.name === file.name)) {
                         this._activeCase.documents.push(meta);
@@ -1592,9 +1635,6 @@ export class Library extends Common {
     writeLibConversation(messages) {
         return this.writeJson(this._convPath(), { messages });
     }
-    async listLibFiles(domain) {
-        return this.listFiles(this.mainPath(domain));
-    }
     async readLibFile(domain, fileName) {
         return this.readFilePath(`${this.mainPath(domain)}/${fileName}`);
     }
@@ -1621,17 +1661,15 @@ export class Library extends Common {
         if (!oneDrive.account)
             await oneDrive.signIn();
         let added = 0;
-        const items = await this.listLibFiles(domain);
+        const files = await this.listFiles(this.mainPath(domain));
         const meta = await this.folderMeta(domain);
         if (!meta)
             return added;
         const existing = meta.documents;
-        for (const item of items) {
-            if (!item.file || !isSupported(item.name))
+        for (const file of files) {
+            if (existing.some((d) => d.name === file.name))
                 continue;
-            if (existing.some((d) => d.name === item.name))
-                continue;
-            existing.push({ name: item.name, mimeType: item.file.mimeType || 'application/octet-stream', sizeBytes: item.size ?? 0, addedAt: Date.now(), tags: [] });
+            existing.push({ name: file.name, mimeType: file.mimeType || 'application/octet-stream', sizeBytes: file.size ?? 0, addedAt: Date.now(), tags: [] });
             added++;
         }
         if (added > 0)
@@ -1898,21 +1936,21 @@ export class Library extends Common {
                 return;
             const folderMeta = await this.folderMeta(domain);
             for (const file of Array.from(fi.files)) {
-                if (!isSupported(file.name)) {
+                if (!this.isSupported(file.name)) {
                     toast(`Format non supporté : ${file.name}`, 'error');
                     continue;
                 }
                 try {
-                    const ab = await file.arrayBuffer();
-                    const fileMeta = makeDocMeta(file);
-                    await this.writeLibFile(domain, file.name, ab, fileMeta.mimeType);
+                    const buffer = await file.arrayBuffer();
+                    const fileMeta = this.makeDocMeta(file);
+                    await this.writeLibFile(domain, file.name, buffer, fileMeta.mimeType);
                     if (!folderMeta)
                         return;
                     if (!folderMeta.documents.some((d) => d.name === file.name)) {
                         folderMeta.documents.push(fileMeta);
                         await this.saveDomainMeta(domain, folderMeta);
+                        toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, 'success');
                     }
-                    toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, 'success');
                 }
                 catch (err) {
                     toast(`Erreur : ${err.message}`, 'error');
