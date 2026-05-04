@@ -326,7 +326,7 @@ export class OneDriveAuth {
         const acquired = await this._MSAL.acquireToken();
         this._token = acquired?.token || null;
         this._account = acquired?.account || null;
-        this._token ? alert(`Signed in successfully ${this._token.substring(0, 10)}...`) : alert(`Failed to sign in`);
+        this._token ? alert(`Signed in successfully, user: ${this.userName}...`) : alert(`Failed to sign in`);
         return this._token;
     }
     /**

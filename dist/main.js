@@ -273,7 +273,7 @@ async function updateTopBar(label, switchTo, action) {
     // Try silent OneDrive sign-in
     if (!odBtn)
         return;
-    if (!oneDrive.account)
+    if (!oneDrive.userName)
         await oneDrive.signIn();
     const userName = oneDrive.userName;
     odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
