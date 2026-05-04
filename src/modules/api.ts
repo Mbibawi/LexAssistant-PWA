@@ -132,7 +132,7 @@ export class ClaudeAPI {
    * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
    * and inject the anthropic-version header ourselves since gFetch won't add it.
    */
-  private async callProxy(claudeBody: ClaudeConversation, api: string = 'claude'): Promise<ClaudeResponse> {
+  private async callProxy(claudeBody: ClaudeConversation, api: string = 'claude'): Promise<string> {
     let body = JSON.stringify({ path: this.PATH, claudeBody: claudeBody });
     console.log('claudeBody: ', claudeBody)
     const resp = await fetch(
@@ -151,7 +151,7 @@ export class ClaudeAPI {
       const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
       throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
     }
-    return await resp.text() as Promise<ClaudeResponse>;
+    return await resp.text();
   }
 
   private claudeBody(
@@ -310,7 +310,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         content: [...docParts, { type: 'text', text: prompt }],
       }]),
     );
-    return this.extractText(data);
+    return data;
+    //return this.extractText(data);
   }
   // ─── Case conversation ────────────────────────────────────────────────────
 
@@ -337,7 +338,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     const data = await this.callProxy(
       this.claudeBody(4096, [{ role: 'user', content }], system),
     );
-    return this.extractText(data);
+    return data;
+    //return this.extractText(data);
   }
 
   // ─── Library conversation ─────────────────────────────────────────────────
@@ -382,7 +384,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
       }];
 
     const data = await this.callProxy(this.claudeBody(4096, messages, system));
-    return this.extractText(data);
+    return data;
+    //return this.extractText(data);
   }
 
   // ─── DOCX generation via Claude ──────────────────────────────────────────
@@ -407,7 +410,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         system,
       ),
     );
-    return this.extractText(data);
+    return data;
+    //return this.extractText(data);
   }
 
   toBase64(buffer: ArrayBuffer): string {

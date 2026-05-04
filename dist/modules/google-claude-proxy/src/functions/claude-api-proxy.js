@@ -86,11 +86,11 @@ function buildForwardHeaders(incoming) {
     return headers;
 }
 function mirrorResponseHeaders(upstreamHeaders, res) {
-    const skip = new Set(["transfer-encoding", "connection"]);
+    const skip = new Set(["transfer-encoding", "content-encoding", "content-length", "connection"]);
     for (const [key, value] of upstreamHeaders.entries()) {
-        if (!skip.has(key.toLowerCase())) {
-            res.setHeader(key, value);
-        }
+        if (skip.has(key.toLowerCase()))
+            continue;
+        res.setHeader(key, value);
     }
 }
 function setCorsHeaders(res) {

@@ -236,7 +236,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 role: 'user',
                 content: [...docParts, { type: 'text', text: prompt }],
             }]));
-        return this.extractText(data);
+        return data;
+        //return this.extractText(data);
     }
     // ─── Case conversation ────────────────────────────────────────────────────
     async callClaudeCase(folderName, opts) {
@@ -259,7 +260,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
             content = [...docParts, { type: 'text', text: opts.userMessage }];
         }
         const data = await this.callProxy(this.claudeBody(4096, [{ role: 'user', content }], system));
-        return this.extractText(data);
+        return data;
+        //return this.extractText(data);
     }
     // ─── Library conversation ─────────────────────────────────────────────────
     async callClaudeLib(folderName, opts) {
@@ -300,7 +302,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                     content: [...firstUserContent, { type: 'text', text: userMessage }]
                 }];
         const data = await this.callProxy(this.claudeBody(4096, messages, system));
-        return this.extractText(data);
+        return data;
+        //return this.extractText(data);
     }
     // ─── DOCX generation via Claude ──────────────────────────────────────────
     // Claude returns markdown; the caller handles local DOCX conversion.
@@ -313,7 +316,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 content: [...contextParts, { type: 'text', text: prompt }]
             }
         ], system));
-        return this.extractText(data);
+        return data;
+        //return this.extractText(data);
     }
     toBase64(buffer) {
         const bytes = new Uint8Array(buffer);
