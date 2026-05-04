@@ -538,9 +538,11 @@ class Folders extends OneDriveAuth {
     const resp = await this.gFetch(
       `${folderPath}:/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
     );
+    if (!resp.ok) return [];
     const data = (await resp.json()) as { value: GraphDriveItem[] };
     return data.value ?? [];
   }
+
 
   /**
    * Lists immediate subfolders of a path relative to root.
@@ -814,7 +816,7 @@ abstract class Common extends Folders {
    */
   protected setupInputArea(userInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement): void {
     if (!userInput || !sendBtn) return;
-    const send = () => this.sendMessage(qs(ids.userInput, userInput), sendBtn);
+    const send = () => this.sendMessage(userInput, sendBtn);
     sendBtn.onclick = send;
     userInput.addEventListener('input', () => this.autoResize(userInput));
     userInput.addEventListener('keydown', (e) => {

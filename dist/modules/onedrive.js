@@ -485,6 +485,8 @@ class Folders extends OneDriveAuth {
     async listFolderItems(folderPath) {
         //return this.oneDriveProxy('list', 'GET', { path: folderPath });
         const resp = await this.gFetch(`${folderPath}:/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
+        if (!resp.ok)
+            return [];
         const data = (await resp.json());
         return data.value ?? [];
     }
@@ -743,7 +745,7 @@ class Common extends Folders {
     setupInputArea(userInput, sendBtn) {
         if (!userInput || !sendBtn)
             return;
-        const send = () => this.sendMessage(qs(ids.userInput, userInput), sendBtn);
+        const send = () => this.sendMessage(userInput, sendBtn);
         sendBtn.onclick = send;
         userInput.addEventListener('input', () => this.autoResize(userInput));
         userInput.addEventListener('keydown', (e) => {
