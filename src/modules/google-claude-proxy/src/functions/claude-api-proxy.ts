@@ -38,7 +38,7 @@ async function handleClaudeProxy(req, res) {
     try {
         const upstream = await fetch(claudeUrl, {
             method: req.method,
-            headers: buildForwardHeaders(req.headers),
+            headers: req.headers,
             body: JSON.stringify(claudeBody)
         });
 

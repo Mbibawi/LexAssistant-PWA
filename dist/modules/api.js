@@ -106,13 +106,13 @@ export class ClaudeAPI {
      * and inject the anthropic-version header ourselves since gFetch won't add it.
      */
     async callProxy(claudeBody, api = 'claude') {
-        const body = JSON.stringify({ path: this.PATH, claudeBody: claudeBody });
+        let body = JSON.stringify({ path: this.PATH, claudeBody: claudeBody });
         console.log('claudeBody: ', claudeBody);
         const resp = await fetch(`${this.CLAUDE_PROXY}${api}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'anthropic-version': "2024-06-01",
+                'anthropic-version': "2023-06-01",
             },
             body: body,
         });
