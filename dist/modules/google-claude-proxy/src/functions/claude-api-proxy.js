@@ -19,7 +19,8 @@ export const main = async (req, res) => {
 };
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 async function handleClaudeProxy(req, res) {
-    const claudePath = req.headers['x-path'];
+    const body = JSON.parse(req.body);
+    const { claudePath, messages } = body;
     if (!claudePath) {
         res.status(400).json({ error: "Missing body parameter: path" });
         return;
@@ -29,7 +30,7 @@ async function handleClaudeProxy(req, res) {
         const upstream = await fetch(claudeUrl, {
             method: req.method,
             headers: buildForwardHeaders(req.headers),
-            body: req.body
+            body: JSON.stringify(messages)
         });
         res.status(upstream.status);
         mirrorResponseHeaders(upstream.headers, res);

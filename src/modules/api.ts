@@ -140,9 +140,8 @@ export class ClaudeAPI {
         headers: {
           'Content-Type': 'application/json',
           'anthropic-version': "2024-06-01",
-          'x-path': this.PATH
         },
-        body: JSON.stringify(messages),
+        body: JSON.stringify({ path: this.PATH, messages: messages }),
       }
     );
 
