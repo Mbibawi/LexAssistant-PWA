@@ -524,7 +524,7 @@ class Folders extends OneDriveAuth {
   protected async listFolderItems(folderPath: string): Promise<GraphDriveItem[]> {
     //return this.oneDriveProxy('list', 'GET', { path: folderPath });
     const resp = await this.gFetch(
-      `${folderPath}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
+      `${folderPath}:/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`,
     );
     const data = (await resp.json()) as { value: GraphDriveItem[] };
     return data.value ?? [];
