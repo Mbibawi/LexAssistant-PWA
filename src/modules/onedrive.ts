@@ -423,19 +423,18 @@ export class OneDriveAuth {
     return result;
   }
 
-  async callClaudeProxy(api: string, body: string, anthropicVersion: string) {
-    return await this.gFetch(
+  async callClaudeProxy(api: string, path: string, body: BodyInit, anthropicVersion: string) {
+    return await fetch(
       `${this.CLAUDE_PROXY}${api}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'anthropic-version': anthropicVersion,
+          'x-path': path
         },
         body: body,
-      },
-      false,
-      true
+      }
     );
   }
 
@@ -458,7 +457,7 @@ export class OneDriveAuth {
     const headers: Record<string, string> = {
       ...(opts.headers as Record<string, string> ?? {}),
     };
-    
+
     if (!Proxy) headers.Authorization = `Bearer ${this._token}`;
 
     if (!rawBody && opts.body && typeof opts.body === 'string') {

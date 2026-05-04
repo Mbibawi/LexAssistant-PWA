@@ -134,7 +134,8 @@ export class ClaudeAPI {
   private async callProxy(messages: ClaudeConversation, api: string = 'claude'): Promise<ClaudeResponse> {
     const resp = await oneDrive.callClaudeProxy(
       api,
-      JSON.stringify({ path: this.PATH, messages: messages }),
+      this.PATH,
+      JSON.stringify(messages),
       "2024-06-01"
     );
 

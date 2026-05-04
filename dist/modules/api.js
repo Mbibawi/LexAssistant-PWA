@@ -106,7 +106,7 @@ export class ClaudeAPI {
      * and inject the anthropic-version header ourselves since gFetch won't add it.
      */
     async callProxy(messages, api = 'claude') {
-        const resp = await oneDrive.callClaudeProxy(api, JSON.stringify({ path: this.PATH, messages: messages }), "2024-06-01");
+        const resp = await oneDrive.callClaudeProxy(api, this.PATH, JSON.stringify(messages), "2024-06-01");
         if (!resp.ok) {
             const e = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
             throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);

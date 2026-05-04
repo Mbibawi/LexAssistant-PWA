@@ -387,15 +387,16 @@ export class OneDriveAuth {
             throw new Error(result.message || 'Proxy Error');
         return result;
     }
-    async callClaudeProxy(api, body, anthropicVersion) {
-        return await this.gFetch(`${this.CLAUDE_PROXY}${api}`, {
+    async callClaudeProxy(api, path, body, anthropicVersion) {
+        return await fetch(`${this.CLAUDE_PROXY}${api}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'anthropic-version': anthropicVersion,
+                'x-path': path
             },
             body: body,
-        }, false, true);
+        });
     }
     /**
      * Universal fetch for both Graph API and external URLs (GCF proxy).
