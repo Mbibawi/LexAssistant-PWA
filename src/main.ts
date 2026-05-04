@@ -43,6 +43,7 @@ export const ids = {
   contextMenu: "context-menu",
   docList: "doc-list",
   docCount: "doc-count",
+  docFilter: 'doc-filter-tab',
   domainList: "domain-list",
   domainContent: "domain-content",
   fileCancel: "file-cancel",

@@ -79,7 +79,7 @@ type LibCallOpts = {
   docs: LibDocumentMeta[];
   skills: { name: string; content: string }[];
   userMessage: string;
-  history: { role: ChatRole; content: string }[];
+  history: ClaudeMessage[];
   knowledgeBase: string | undefined;
   /** Caller provides file reader scoped to the library domain folder */
   readFile: (folderName: LibDomain | string, fileName: string) => Promise<ArrayBuffer>;
@@ -120,25 +120,20 @@ type PermanentNote = {
 // ─── _conversation.json — chat history, stored in case / library folder ───────
 
 type ConversationFile = {
-  messages: CaseMessage[];
+  messages: ClaudeMessage[];
 }
 
-type CaseMessage = {
+type ClaudeMessage = {
   id?: string;
   role: ChatRole;
-  content: string | ContentPart[];
+  content: ChatBlock | ContentPart[];
   timestamp?: number;
   mode?: WorkMode;
   generatedDocName?: string;
+  domain?: LibDomain | 'all';
 };
 
-type LibMessage = {
-  id: string;
-  role: ChatRole;
-  content: string;
-  timestamp: number;
-  domain: LibDomain | 'all';
-}
+
 
 // ─── In-memory case object (assembled from CaseMeta + folder listing) ─────────
 
@@ -191,23 +186,15 @@ type OneDriveConfig = {
 type ChatBlock = {
   type: "text";
   text: string;
+  cache_control?: { type: string; ttl: string }
 };
 
-type MessageSystem = {
-  type: "text";
-  text: string;
-  cache_control?: { type: string; ttl: string };
-}[];
 
-type ClaudeMessages = {
+type ClaudeConversation = {
   model: string;
   max_tokens: number;
-  system?: {
-    type: "text";
-    text: string;
-    cache_control?: { type: string; ttl: string };
-  }[];
-  messages: CaseMessage[];
+  system?: ChatBlock;
+  messages: ClaudeMessage[];
 };
 
 type ClaudeResponse = {

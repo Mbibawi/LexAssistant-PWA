@@ -12,12 +12,7 @@ const NATIVE_MIMES = new Set([
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function docPart(name: string, mime: string, base64: string): ContentPart {
-  if (NATIVE_MIMES.has(mime)) {
-    return { type: 'document', source: { type: 'base64', media_type: mime, data: base64 }, title: name };
-  }
-  return { type: 'text', text: `[Fichier joint : ${name} — format non lu nativement]` };
-}
+
 
 /** Convert any string to base64 (UTF-8 safe) */
 function strToBase64(text: string): string {
@@ -136,7 +131,7 @@ export class ClaudeAPI {
    * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
    * and inject the anthropic-version header ourselves since gFetch won't add it.
    */
-  private async callProxy(messages: ClaudeMessages, api: string = 'claude'): Promise<ClaudeResponse> {
+  private async callProxy(messages: ClaudeConversation, api: string = 'claude'): Promise<ClaudeResponse> {
     const resp = await oneDrive.callClaudeProxy(
       api,
       JSON.stringify({ path: this.PATH, messages: messages }),
@@ -152,10 +147,10 @@ export class ClaudeAPI {
 
   private claudeBody(
     max: number,
-    messages: ClaudeMessages['messages'],
-    system?: MessageSystem,
-  ): ClaudeMessages {
-    const body: ClaudeMessages = { model: this.MODEL, max_tokens: max, messages };
+    messages: ClaudeMessage[],
+    system?: ChatBlock,
+  ): ClaudeConversation {
+    const body: ClaudeConversation = { model: this.MODEL, max_tokens: max, messages };
     if (system) body.system = system;
     return body;
   }
@@ -177,10 +172,32 @@ export class ClaudeAPI {
         const buf = await readFile(folderName, doc.name);
         parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
       } catch {
-        parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible sur OneDrive]` });
+        parts.push({
+          type: 'text',
+          text: `[Fichier "${doc.name}" inaccessible sur OneDrive]`
+        });
       }
     }
     return parts;
+
+    function docPart(name: string, mime: string, base64: string): ContentPart {
+      if (NATIVE_MIMES.has(mime)) {
+        return {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: mime,
+            data: base64
+          },
+          title: name
+        };
+      };
+
+      return {
+        type: 'text',
+        text: `[Fichier joint : ${name} — format non lu nativement]`
+      };
+    }
   }
 
   // ─── Duplicate detection ──────────────────────────────────────────────────
@@ -245,17 +262,17 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
    */
   async loadLatestCaseKb(
     folderPath: string,
-    listFiles: (path: string) => Promise<GraphDriveItem[]>,
+    items: GraphDriveItem[],
     readFile: (path: string) => Promise<ArrayBuffer>,
-  ): Promise<{ content: string; filename: string } | null> {
-    const items = await listFiles(folderPath).catch(() => [] as GraphDriveItem[]);
+  ): Promise<string | null> {
+    //const items = await listFiles(folderPath).catch(() => [] as GraphDriveItem[]);
     const kbFiles = items
       .filter((i) => i.file && i.name.startsWith('_kb_') && i.name.endsWith('.md'))
       .sort((a, b) => b.name.localeCompare(a.name)); // lexicographic = chronological
     if (!kbFiles.length) return null;
     const latest = kbFiles[0];
     const buf = await readFile(`${folderPath}/${latest.name}`);
-    return { content: new TextDecoder().decode(buf), filename: latest.name };
+    return new TextDecoder().decode(buf);
   }
 
   // ─── Knowledge base — Library ─────────────────────────────────────────────
@@ -289,10 +306,10 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Case conversation ────────────────────────────────────────────────────
 
   async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string> {
-    const system: MessageSystem = [{
+    const system: ChatBlock = {
       type: 'text',
       text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
-    }];
+    };
 
     // If a knowledge base is available, inject it as a cached document
     // instead of re-sending all raw files — token optimization
@@ -320,32 +337,46 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Library conversation ─────────────────────────────────────────────────
 
   async callClaudeLib(folderName: string | LibDomain, opts: LibCallOpts): Promise<string> {
-    const system: MessageSystem = [{
+    const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
+    const system: ChatBlock = {
       type: 'text',
-      text: buildLibSystem(opts.domain, opts.skills),
-    }];
+      text: buildLibSystem(domain, skills),
+    };
 
     let firstUserContent: ContentPart[];
-    if (opts.knowledgeBase) {
+    if (knowledgeBase) {
       firstUserContent = [
         {
           type: 'document',
-          source: { type: 'base64', media_type: 'text/markdown', data: strToBase64(opts.knowledgeBase) },
-          title: `Bibliothèque juridique — ${opts.domain}`,
-        } as ContentPart,
+          source: {
+            type: 'base64',
+            media_type: 'text/markdown',
+            data: strToBase64(knowledgeBase!)
+          },
+          title: `Bibliothèque juridique — ${domain}`,
+        }
       ];
     } else {
-      firstUserContent = await this.buildDocParts(folderName, opts.docs, opts.readFile);
+      firstUserContent = await this.buildDocParts(folderName, docs, readFile);
     }
 
     // Rebuild history: inject docs only in the first user turn
-    const messages: ClaudeMessages['messages'] = opts.history.length
+    const messages: ClaudeMessage[] = history.length
       ? [
-        { role: 'user', content: [...firstUserContent, { type: 'text', text: opts.history[0].content as string }] as unknown as string },
-        ...opts.history.slice(1).map((h) => ({ role: h.role, content: h.content })),
-        { role: 'user', content: opts.userMessage },
+        {
+          role: 'user',
+          content: [...firstUserContent, (history[0].content as ChatBlock)]
+        },
+        ...history,
+        {
+          role: 'user',
+          content: { type: 'text', text: userMessage }
+        },
       ]
-      : [{ role: 'user', content: [...firstUserContent, { type: 'text', text: opts.userMessage }] as unknown as string }];
+      : [{
+        role: 'user',
+        content: [...firstUserContent, { type: 'text', text: userMessage }]
+      }];
 
     const data = await this.callProxy(this.claudeBody(4096, messages, system));
     return this.extractText(data);
@@ -364,8 +395,13 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     const data = await this.callProxy(
       this.claudeBody(
         6000,
-        [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] as unknown as string }],
-        [{ type: 'text', text: system }],
+        [
+          {
+            role: 'user',
+            content: [...contextParts, { type: 'text', text: prompt }]
+          }
+        ],
+        { type: 'text', text: system },
       ),
     );
     return this.extractText(data);

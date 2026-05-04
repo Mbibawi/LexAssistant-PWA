@@ -665,15 +665,18 @@ abstract class Common extends Folders {
   readonly claude = CLAUDE;
   //readonly config  = oneDrive.config;
   protected activeMode: WorkMode = 'analyse';
-  protected skills: Array<{ name: string; content: string }> = [];
+  protected _skills: Array<{ name: string; content: string }> = [];
+  protected _kb: string | null = null;  // cached knowledge base content
+  protected _notes: PermanentNote[] = [];
+  protected _foldersMeta: FolderMeta[] = [];
 
 
   // ─── Abstract Methods ───────────────────────────────────────────────────────────────
   protected abstract buildKnowledgeBase(appendMode: Boolean): Promise<void>;
   abstract showUI(): void;
-  protected abstract buildUI(): void;
+  protected abstract buildUI(content: HTMLElement): { sendBtn: HTMLButtonElement, userInput: HTMLTextAreaElement };
   protected abstract renderDocList(): void;
-  protected abstract buildMsgEl(msg: CaseMessage | LibMessage): HTMLElement;
+  protected abstract buildMsgEl(msg: ClaudeMessage): HTMLElement;
   protected abstract sendMessage(ta: HTMLTextAreaElement, sendBtn: HTMLButtonElement): Promise<void>;
   protected abstract updateQuickPrompts(chatInput: HTMLTextAreaElement): void;
   protected abstract setupFileUpload(): void;
@@ -696,9 +699,9 @@ abstract class Common extends Folders {
     const messages = await this.readJson<{ messages: T[] }>(this.convPath(path));
     return messages?.messages ?? [];
   }
-  protected writeConversation(f: string, m: CaseMessage[]) { return this.writeJson(this.convPath(f), { messages: m } satisfies ConversationFile); }
+  protected writeConversation(f: string, m: ClaudeMessage[]) { return this.writeJson(this.convPath(f), { messages: m } satisfies ConversationFile); }
 
-  protected renderChat(messages: CaseMessage[] | LibMessage[], chatBody: HTMLElement): void {
+  protected renderChat(messages: ClaudeMessage[], chatBody: HTMLElement): void {
     if (!messages.length) return;
     const area = byID(ids.chatArea);
     if (!area) return;
@@ -728,7 +731,7 @@ abstract class Common extends Folders {
           skills.push({ name: item.name, content: new TextDecoder().decode(buf) });
         } catch { }
       }
-      this.skills = skills;
+      this._skills = skills;
       this.updateSkillIndicator();
       return skills;
     } catch { return []; }
@@ -766,20 +769,18 @@ abstract class Common extends Folders {
    * 
    * @returns 
    */
-  protected setupInputArea(): void {
-    const chatInput = byID(ids.userInput) as HTMLTextAreaElement | null;
-    const sendBtn = byID(ids.sendBtn) as HTMLButtonElement | null;
-    if (!chatInput || !sendBtn) return;
-    const send = () => () => this.sendMessage(chatInput, sendBtn);
-    sendBtn.onclick = send();
-    chatInput.addEventListener('input', () => this.autoResize(chatInput));
-    chatInput.addEventListener('keydown', (e) => {
+  protected setupInputArea(userInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement): void {
+    if (!userInput || !sendBtn) return;
+    const send = () => this.sendMessage(qs(ids.userInput, userInput), sendBtn);
+    sendBtn.onclick = send;
+    userInput.addEventListener('input', () => this.autoResize(userInput));
+    userInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         send();
       }
     });
-    this.updateQuickPrompts(chatInput);
+    this.updateQuickPrompts(userInput);
   }
   // ─── Settings modal (OneDrive only — no API key) ──────────────────────────
 
@@ -842,7 +843,7 @@ abstract class Common extends Folders {
   // ─── Skill indicator ──────────────────────────────────────────────────────
 
   updateSkillIndicator(): void {
-    const n = this.skills.length;
+    const n = this._skills.length;
     for (const id of [ids.skillsBadge, ids.libSkillsBadge]) {
       const badge = byID(id);
       if (!badge) continue;
@@ -905,17 +906,14 @@ abstract class Common extends Folders {
 export class Cases extends Common {
   private _saving = false;
   private _docFilter: DocKind | null = null;
-  private _foldersMeta: FolderMeta[] = [];
   private _activeCase: FolderMeta | null = null;
-  private _caseNotes: PermanentNote[] = [];
-  private _messages: CaseMessage[] = [];
-  private _caseKb: string | null = null; // cached knowledge base content
+  private _messages: ClaudeMessage[] = [];
 
   protected readonly _chatBody = el('div', { className: 'msg msg--assistant' },
     el('div', { className: 'msg_label', textContent: 'Lex Assistant' }),
     el('div', { className: 'msg_bubble' },
       el('p', {
-        innerHTML: `Dossier <strong>${this._activeCase?.name}</strong>. ${this._activeCase?.documents.length} pièce(s), ${this._caseNotes.length} note(s)${this.skills.length ? `, ${this.skills.length} skill(s)` : ''}${this._caseKb ? ' · <em>Base de connaissance chargée</em>' : ''}.`
+        innerHTML: `Dossier <strong>${this._activeCase?.name}</strong>. ${this._activeCase?.documents.length} pièce(s), ${this._notes.length} note(s)${this._skills.length ? `, ${this._skills.length} skill(s)` : ''}${this._kb ? ' · <em>Base de connaissance chargée</em>' : ''}.`
       }),
       el('p', { textContent: 'Que souhaitez-vous faire ?' }),
     ));
@@ -927,24 +925,20 @@ export class Cases extends Common {
 
   // ─── Show UI ──────────────────────────────────────────────────────────────
   async showUI(): Promise<void> {
-    this.buildUI();
+    const content = byID(ids.content)!;
+    const { userInput, sendBtn } = this.buildUI(content);
     // Wire all scenario-specific UI
     this.setupBarsBtns();
+    if (!this.userName) return this.showNotConnected();
 
-    if (this.userName) {
-      this.updateODStatus();
-      this.setupInputArea();
-      await this.loadAllSubFolders();//!this must come before renderChat(), because it sets this._activeCase
-      this.renderChat(this._messages, this._chatBody);
-      this.renderDocList();
-      this.updateSkillIndicator();
-      await this.fetchSkills();
-    } else {
-      this.showNotConnected();
-    }
+    this.updateODStatus();
+    this.setupInputArea(userInput, sendBtn);
+    await this.loadAllSubFolders();//!this must come before renderChat(), because it sets this._activeCase
+    this.renderChat(this._messages, this._chatBody);
+    this.updateSkillIndicator();
+    await this.fetchSkills();
   }
-  protected buildUI(): void {
-    const content = byID(ids.content)!;
+  protected buildUI(content: HTMLElement): { userInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement } {
     content.innerHTML = '';
     content.className = 'dossiers-view';
     const main = el('div', { id: ids.mainLayout });
@@ -962,7 +956,7 @@ export class Cases extends Common {
       el('div', { className: 'sidebar_section-title', innerHTML: "Pièces <span id='doc-count' class='doc-count'>0 pièces</span>" }),
     );
 
-    const filterTabs = el('div', { className: 'doc-filter-tabs' });
+    const filterTabs = el('div', { className: ids.docFilter });
     const types = {
       all: 'Tout',
       piece: 'Pièces',
@@ -973,7 +967,7 @@ export class Cases extends Common {
     filterTabs.append(
       ...(['all', 'piece', 'jurisprudence', 'doctrine', 'redige'] as const).map((f) =>
         el('button', {
-          className: `doc-filter-tab${f === 'all' ? ' active' : ''}`, 'data-filter': f,
+          className: `${ids.docFilter} ${f === 'all' ? ' active' : ''}`, 'data-filter': f,
           innerText: types[f]
         }),
       ),
@@ -994,14 +988,14 @@ export class Cases extends Common {
 
     // Workspace
     const mode = el('div', { id: ids.modeBar });
-    const inputArea = el('div', { id: ids.inputArea });
+    const chatInput = el('div', { id: ids.inputArea });
     const prompts = el('div', { id: ids.quickPrompts });
     wSpace.append(
       mode,
       el('div', { id: ids.noteBar, className: 'note-bar', style: { display: 'none' } }),
       el('div', { id: ids.chatArea, className: 'chat-area', role: 'log', 'aria-live': 'polite' }),
       prompts,
-      inputArea,
+      chatInput,
     );
 
     mode.append(
@@ -1027,16 +1021,20 @@ export class Cases extends Common {
       ] as [string, string][]).map(([label, prompt]) => el('button', { className: 'quick-btn', 'data-prompt': prompt, innerText: label })),
     );
 
-    inputArea.append(
-      el('textarea', {
-        id: ids.userInput, rows: 2,
-        placeholder: 'Posez une question, demandez la rédaction d\'un acte, ou donnez une instruction…', 'aria-label': 'Message'
-      }),
-      el('button', {
-        id: ids.sendBtn, className: 'btn btn--primary', 'aria-label': 'Envoyer',
-        innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
-      }),
+    const sendBtn = el('button', {
+      id: ids.sendBtn, className: 'btn btn--primary', 'aria-label': 'Envoyer',
+      innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
+    });
+    const userInput = el('textarea', {
+      id: ids.userInput,
+      rows: 2,
+      placeholder: 'Posez une question, demandez la rédaction d\'un acte, ou donnez une instruction…', 'aria-label': 'Message'
+    });
+    chatInput.append(
+      userInput,
+      sendBtn,
     );
+    return { userInput, sendBtn };
   }
 
   // ─── OneDrive CRUD ────────────────────────────────────────────────────────
@@ -1074,7 +1072,7 @@ export class Cases extends Common {
     finally { this._saving = false; }
   }
 
-  private saveNotes() { return this._activeCase ? this.writeNotes(this._activeCase.folderName, this._caseNotes) : Promise.resolve(); }
+  private saveNotes() { return this._activeCase ? this.writeNotes(this._activeCase.folderName, this._notes) : Promise.resolve(); }
 
 
   private saveConversation() {
@@ -1113,17 +1111,17 @@ export class Cases extends Common {
     if (!caseMeta) return;
     const { folderName, name, domain } = caseMeta;
     this._activeCase = caseMeta;
-    this._caseKb = null;
-    this._caseNotes = await this.readNotes(folderName);
-    this._messages = await this.readConversation<CaseMessage>(folderName);
+    this._kb = null;
+    this._notes = await this.readNotes(folderName);
+    this._messages = await this.readConversation<ClaudeMessage>(folderName);
 
     // Try to load the latest knowledge base silently
-    const kb = await this.claude.loadLatestCaseKb(
-      this.mainPath(folderName),
-      this.listAllFolderItems,
+    const folderPath = this.mainPath(folderName);
+    this._kb = await this.claude.loadLatestCaseKb(
+      folderPath,
+      await this.listAllFolderItems(folderPath),
       this.readFilePath,
     );
-    if (kb) this._caseKb = kb.content;
 
     qsa<HTMLElement>('.case-item').forEach((el) =>
       el.classList.toggle('active', el.dataset.folder === caseMeta.folderName));
@@ -1174,7 +1172,7 @@ export class Cases extends Common {
       const filename = `_kb${this._activeCase.name}_${this.claude.kbTimestamp()}.md`;
       const filePath = `${this.mainPath(this._activeCase.folderName)}/${filename}`;
       await this.writeFilePath(filePath, markdown, 'text/markdown');
-      this._caseKb = markdown;
+      this._kb = markdown;
       toast('Base de connaissance générée et sauvegardée.', 'success');
     } catch (err) {
       toast('Erreur KB : ' + (err as Error).message, 'error');
@@ -1190,18 +1188,21 @@ export class Cases extends Common {
     if (!list) return;
     list.innerHTML = '';
     const labels = { active: 'En cours', closed: 'Clôturé', suspended: 'Suspendu' };
-    for (const c of this._foldersMeta) {
-      const item = el('div', { className: 'case-item' + (c.folderName === this._activeCase?.folderName ? ' active' : '') });
-      item.dataset.folder = c.folderName;
+    this._foldersMeta
+      .forEach(_case => {
+        const { folderName, status, domain, name } = _case;
+        const item = el('div', { className: 'case-item' + (folderName === this._activeCase?.folderName ? ' active' : '') });
+        item.dataset.folder = folderName;
       item.append(
-        el('span', { className: 'case-item_name', textContent: c.name }),
-        el('span', { className: 'case-item_domain', textContent: c.domain }),
-        el('span', { className: `case-item_status case-item_status--${c.status}`, textContent: labels[c.status] }),
+        el('span', { className: 'case-item_name', textContent: name }),
+        el('span', { className: 'case-item_domain', textContent: domain }),
+        el('span', { className: `case-item_status case-item_status--${status}`, textContent: labels[status] }),
       );
-      item.onclick = () => this.selectCase(c);
-      item.addEventListener('contextmenu', (e) => { e.preventDefault(); this.openCaseContextMenu(c, e.clientX, e.clientY); });
+        item.onclick = () => this.selectCase(_case);
+        item.addEventListener('contextmenu', (e) => { e.preventDefault(); this.openCaseContextMenu(_case, e.clientX, e.clientY); });
       list.appendChild(item);
-    }
+
+      })
   }
 
   // ─── Render: doc list ─────────────────────────────────────────────────────
@@ -1250,40 +1251,40 @@ export class Cases extends Common {
   // ─── Render: note bar ─────────────────────────────────────────────────────
 
   private renderNoteBar(): void {
-    if (!this._caseNotes.length) return;
+    if (!this._notes.length) return;
     const bar = byID(ids.noteBar);
     if (!bar) return;
     bar.innerHTML = '';
-    toggle(bar, this._caseNotes.length > 0);
-    const n = this._caseNotes.length;
+    toggle(bar, this._notes.length > 0);
+    const n = this._notes.length;
     bar.append(
       el('span', { className: 'note-badge', textContent: String(n) }),
       el('span', {
         className: 'note-bar_text',
-        textContent: `note${n > 1 ? 's' : ''} active${n > 1 ? 's' : ''} · ` + this._caseNotes.map((x) => x.content.slice(0, 40) + '…').join(' — ')
+        textContent: `note${n > 1 ? 's' : ''} active${n > 1 ? 's' : ''} · ` + this._notes.map((x) => x.content.slice(0, 40) + '…').join(' — ')
       }),
       (() => { const b = el('button', { className: 'note-bar_manage', textContent: 'Gérer' }); b.onclick = () => this.openNotesModal(); return b; })(),
     );
   }
 
   // ─── Render: chat ─────────────────────────────────────────────────────────
-  protected buildMsgEl(msg: CaseMessage): HTMLElement {
+  protected buildMsgEl(msg: ClaudeMessage): HTMLElement {
     const wrap = el('div', { className: `msg msg--${msg.role}` });
     const bubble = el('div', { className: 'msg_bubble' });
-    bubble.innerHTML = renderMarkdown(msg.content as string);
+    bubble.innerHTML = renderMarkdown((msg.content as ChatBlock).text);
     wrap.append(el('div', { className: 'msg_label', textContent: msg.role === 'user' ? 'Vous' : 'Lex Assistant' }), bubble);
 
     if (msg.role === 'assistant') {
       const actions = el('div', { className: 'msg_actions' });
       const copy = el('button', { className: 'msg-action-btn', textContent: 'Copier' });
-      copy.onclick = () => { navigator.clipboard.writeText(msg.content as string); toast('Copié.', 'info', 1500); };
+      copy.onclick = () => { navigator.clipboard.writeText(((msg.content as ChatBlock).text)); toast('Copié.', 'info', 1500); };
       actions.appendChild(copy);
 
       if (msg.mode === 'redaction' || msg.generatedDocName) {
         const dl = el('button', { className: 'msg-action-btn msg-action-btn--primary', textContent: '⬇ Télécharger .docx' });
         dl.onclick = async () => {
           try {
-            const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: msg.content as string, caseRef: this._activeCase?.name ?? '' });
+            const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: (msg.content as ChatBlock).text, caseRef: this._activeCase?.name ?? '' });
             download(blob, (msg.generatedDocName ?? 'document').replace(/[^a-z0-9_\- ]/gi, '_') + '.docx');
           } catch (err) { toast('Erreur DOCX : ' + (err as Error).message, 'error'); }
         };
@@ -1291,7 +1292,7 @@ export class Cases extends Common {
         odSave.onclick = async () => {
           if (!this._activeCase) return;
           try {
-            const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: msg.content as string, caseRef: this._activeCase.name });
+            const blob = await generateDocx({ title: msg.generatedDocName ?? 'Document', content: (msg.content as ChatBlock).text, caseRef: this._activeCase.name });
             const ab = await blob.arrayBuffer();
             const fname = (msg.generatedDocName ?? 'document').replace(/[^a-z0-9_\- ]/gi, '_') + '.docx';
             const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -1314,18 +1315,18 @@ export class Cases extends Common {
 
   // ─── Send message ─────────────────────────────────────────────────────────
 
-  protected async sendMessage(ta: HTMLTextAreaElement, sendBtn: HTMLButtonElement): Promise<void> {
-    if (!ta || !this._activeCase) return;
-    const text = ta.value.trim();
+  protected async sendMessage(chatInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement): Promise<void> {
+    if (!chatInput || !this._activeCase) return;
+    const text = chatInput.value.trim();
     if (!text) return;
 
-    ta.value = '';
-    this.autoResize(ta);
+    chatInput.value = '';
+    this.autoResize(chatInput);
 
-    const userMsg: CaseMessage = {
+    const userMsg: ClaudeMessage = {
       id: uid(),
       role: 'user',
-      content: text,
+      content: { type: 'text', text: text },
       timestamp: Date.now(),
       mode: this.activeMode
     };
@@ -1339,7 +1340,7 @@ export class Cases extends Common {
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      this._caseNotes.push(note);
+      this._notes.push(note);
       await this.saveNotes();
       this.renderNoteBar();
     }
@@ -1353,12 +1354,12 @@ export class Cases extends Common {
         folderName, {
         caseName: name,
         caseDomain: domain,
-        notes: this._caseNotes,
+          notes: this._notes,
           docs: documents,
-        skills: this.skills,
+          skills: this._skills,
         mode: this.activeMode,
         userMessage: text,
-        knowledgeBase: this._caseKb ?? undefined,
+          knowledgeBase: this._kb ?? undefined,
         readFile: this.readCaseFile,
       });
 
@@ -1368,7 +1369,14 @@ export class Cases extends Common {
         const first = response.split('\n')[0].replace(/^#+\s*/, '').trim();
         docName = first.length > 0 && first.length < 100 ? first : 'Document rédigé';
       }
-      const asst: CaseMessage = { id: uid(), role: 'assistant', content: response, timestamp: Date.now(), mode: this.activeMode, generatedDocName: docName };
+      const asst: ClaudeMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: { type: 'text', text: response },
+        timestamp: Date.now(),
+        mode: this.activeMode,
+        generatedDocName: docName
+      };
       this._messages.push(asst);
       this.appendMsg(this.buildMsgEl(asst));
       await this.saveConversation();
@@ -1378,7 +1386,7 @@ export class Cases extends Common {
       this._messages.pop();
     } finally {
       if (sendBtn) sendBtn.disabled = false;
-      ta.focus();
+      chatInput.focus();
     }
   }
 
@@ -1389,22 +1397,22 @@ export class Cases extends Common {
 
     this.onClick(btn(ids.btnNewSidebar), () => this.openCaseFormModal(null));
     this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
-    this.onClick(btn('btn-settings'), () => this.openSettingsModal());
-    this.onClick(btn('btn-onedrive'), async () => { await this.refreshCaseFromOneDrive(); });
+    this.onClick(btn(ids.settings), () => this.openSettingsModal());
+    this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
     this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
     this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
     this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
     this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
     this.onClick(btn(ids.btnCaseSummary), async () => {
-      const ta = byID(ids.userInput) as HTMLTextAreaElement | null;
-      if (!ta) return;
-      ta.value = 'Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d\'attention prioritaires.';
-      await this.sendMessage(byID(ids.toast) as HTMLTextAreaElement, byID(ids.sendBtn) as HTMLButtonElement);
+      const chatInput = byID(ids.userInput) as HTMLTextAreaElement | null;
+      if (!chatInput) return;
+      chatInput.value = 'Fais un point complet sur ce dossier : enjeux principaux, risques identifiés, actions restantes, points d\'attention prioritaires.';
+      //await this.sendMessage(chatInput, byID(ids.sendBtn) as HTMLButtonElement);
     });
 
-    qsa<HTMLButtonElement>('.doc-filter-tab').forEach((tab) =>
+    qsa<HTMLButtonElement>(`.${ids.docFilter}`).forEach((tab) =>
       this.onClick(tab, () => {
-        setActive(qsa('.doc-filter-tab'), tab, 'active');
+        setActive(qsa(`.${ids.docFilter}`), tab, 'active');
         this._docFilter = (tab.dataset.filter ?? null) as typeof this._docFilter;
         this.renderDocList();
       }),
@@ -1426,12 +1434,12 @@ export class Cases extends Common {
     );
   }
 
-  protected updateQuickPrompts(chatInput: HTMLTextAreaElement) {
+  protected updateQuickPrompts(ta: HTMLTextAreaElement) {
     qsa<HTMLButtonElement>('.quick-btn').forEach((b) => {
       b.onclick = () => {
-        chatInput.value = b.dataset.prompt ?? '';
-        this.autoResize(chatInput);
-        chatInput.focus();
+        ta.value = b.dataset.prompt ?? '';
+        this.autoResize(ta);
+        ta.focus();
       };
     });
   }
@@ -1589,15 +1597,15 @@ export class Cases extends Common {
     const refresh = () => {
       const list = qs<HTMLElement>('#notes-list', dialog);
       list.innerHTML = '';
-      if (!this._caseNotes.length) {
+      if (!this._notes.length) {
         list.appendChild(el('p', { className: 'note-empty', textContent: 'Aucune note. Ajoutez-en une ci-dessous ou utilisez le mode "Note permanente".' }));
         return;
       }
-      for (const note of [...this._caseNotes].sort((a, b) => b.createdAt - a.createdAt)) {
+      for (const note of [...this._notes].sort((a, b) => b.createdAt - a.createdAt)) {
         const row = el('div', { className: 'note-row' });
         const del = el('button', { className: 'btn btn--sm btn--danger', textContent: 'Supprimer' });
         del.onclick = async () => {
-          this._caseNotes = this._caseNotes.filter((n) => n.id !== note.id);
+          this._notes = this._notes.filter((n) => n.id !== note.id);
           await this.saveNotes();
           this.renderNoteBar();
           refresh();
@@ -1624,7 +1632,7 @@ export class Cases extends Common {
       const val = qs<HTMLTextAreaElement>('#new-note', dialog).value.trim();
       if (!val) return;
       const note: PermanentNote = { id: uid(), content: val, createdAt: Date.now(), updatedAt: Date.now() };
-      this._caseNotes.push(note);
+      this._notes.push(note);
       await this.saveNotes();
       this.renderNoteBar();
       refresh();
@@ -1651,8 +1659,7 @@ export class Cases extends Common {
 export class Library extends Common {
   private _activeDomain: LibDomain | 'all' = 'all';
   private _domainDocs = new Map<string, LibDocumentMeta[]>();
-  private _messages: LibMessage[] = [];
-  private _libKb: string | null = null; // cached knowledge base for active domain
+  private _messages: ClaudeMessage[] = [];
 
   readonly DOMAINS: Array<{ id: LibDomain; label: string; icon: string }> = [
     { id: 'commercial', label: 'Commercial', icon: '🏢' },
@@ -1680,28 +1687,25 @@ export class Library extends Common {
 
   async showUI(): Promise<void> {
     const content = byID(ids.content)!;
-    content.innerHTML = '';
-    content.className = 'bibliotheque-view';
-    content.appendChild(this.buildUI());
+    const { userInput, sendBtn } = this.buildUI(content);
+    if (!this.userName) return this.showNotConnected();
 
-    if (this.userName) {
-      this.updateODStatus();
-      this.setupInputArea();
-      this.renderDomainPills();
-      this._messages = await this.readConversation<LibMessage>(this._activeDomain).catch(() => []);
+    this.updateODStatus();
+    this.setupInputArea(userInput, sendBtn);
+    this.renderDomainPills();
+    this._messages = await this.readConversation<ClaudeMessage>(this._activeDomain).catch(() => []);
       this.renderChat(this._messages, this._chatBody);
       this.renderDocList();
       this.setupFileUpload();
       await this.fetchSkills();
-      this.updateSkillIndicator();
-    } else {
-      this.showNotConnected();
-    }
+    this.updateSkillIndicator();
   }
 
   // ─── UI builder ───────────────────────────────────────────────────────────
 
-  protected buildUI(): HTMLElement {
+  protected buildUI(content: HTMLElement): { userInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement } {
+    content.innerHTML = '';
+    content.className = 'bibliotheque-view';
     const wrap = el('div', { className: 'lib-layout' });
     const sidebar = el('div', { className: 'lib-sidebar' });
     const hdr = el('div', { className: 'lib-sidebar_header' });
@@ -1738,14 +1742,14 @@ export class Library extends Common {
     const chatArea = el('div', { className: 'chat-area', id: ids.libChatArea, role: 'log' });
     chatArea.setAttribute('aria-live', 'polite');
     const quickArea = el('div', { className: 'lib-quick-prompts', id: ids.quickPrompts });
-    const inputArea = el('div', { className: 'lib-input-area' });
-    const ta = el('textarea', { id: ids.userInput, rows: 2, placeholder: 'Interrogez la bibliothèque…' });
+    const chatInput = el('div', { id: ids.inputArea, className: 'lib-input-area' });
+    const userInput = el('textarea', { id: ids.userInput, rows: 2, placeholder: 'Interrogez la bibliothèque…' });
     const sendBtn = el('button', { className: 'btn btn--primary', id: ids.sendBtn });
     sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-    inputArea.append(ta, sendBtn);
-    main.append(topbar, quickArea, chatArea, inputArea);
+    chatInput.append(userInput, sendBtn);
+    main.append(topbar, quickArea, chatArea, chatInput);
     wrap.append(sidebar, main);
-    return wrap;
+    return { userInput, sendBtn };
   }
 
   domainLabel(id: LibDomain | string): string {
@@ -1756,10 +1760,10 @@ export class Library extends Common {
 
   // ─── OneDrive CRUD ────────────────────────────────────────────────────────
 
-  private async _readLibConversation(): Promise<LibMessage[]> {
-    return (await this.readJson<{ messages: LibMessage[] }>(this._convPath()))?.messages ?? [];
+  private async _readLibConversation(): Promise<ClaudeMessage[]> {
+    return (await this.readJson<{ messages: ClaudeMessage[] }>(this._convPath()))?.messages ?? [];
   }
-  private writeLibConversation(messages: LibMessage[]): Promise<void> {
+  private writeLibConversation(messages: ClaudeMessage[]): Promise<void> {
     return this.writeJson(this._convPath(), { messages });
   }
   async listLibFiles(domain: LibDomain): Promise<GraphDriveItem[]> {
@@ -1777,7 +1781,7 @@ export class Library extends Common {
 
   async loadDomainMeta(domain: LibDomain): Promise<LibDocumentMeta[]> {
     if (this._domainDocs.has(domain)) return this._domainDocs.get(domain)!;
-    const docs = (await this.readMeta<LibDomainMeta>(domain).catch(() => null))?.documents ?? [];
+    const docs = (await this.readMeta<LibDomainMeta>(domain))?.documents ?? [];
     this._domainDocs.set(domain, docs);
     return docs;
   }
@@ -1849,7 +1853,7 @@ export class Library extends Common {
       const filename = `_kb_${this._activeDomain}_${this.claude.kbTimestamp}.md`;
       const filePath = `${this.mainPath(this._activeDomain)}/${filename}`;
       await this.writeFilePath(filePath, markdown, 'text/markdown');
-      this._libKb = markdown;
+      this._kb = markdown;
       toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
     } catch (err) { toast('Erreur KB : ' + (err as Error).message, 'error'); }
     finally { if (btn) { btn.disabled = false; btn.textContent = '🧠 Base de connaissance'; } }
@@ -1876,24 +1880,24 @@ export class Library extends Common {
 
   async switchDomain(domain: LibDomain | 'all'): Promise<void> {
     this._activeDomain = domain;
-    this._libKb = null;
+    this._kb = null;
     if (domain !== 'all') {
       await this.loadDomainMeta(domain);
       // Try to load the latest KB for this domain
-      const kb = await this.claude.loadLatestCaseKb(
-        this.mainPath(domain),
-        (p) => this.listAllFolderItems(p),
-        (p) => this.readFilePath(p),
+      const folderPath = this.mainPath(domain);
+      this._kb = await this.claude.loadLatestCaseKb(
+        folderPath,
+        await this.listAllFolderItems(folderPath),
+        this.readFilePath,
       );
-      if (kb) this._libKb = kb.content;
     }
-    this._messages = await this.readConversation<LibMessage>(domain).catch(() => []);
+    this._messages = await this.readConversation<ClaudeMessage>(domain).catch(() => []);
     this.renderDomainPills();
     this.renderDocList();
     this.renderChat(this._messages, this._chatBody);
     const lbl = byID(ids.libActiveDomain);
     if (lbl) lbl.textContent = this.domainLabel(domain);
-    this.updateQuickPrompts(byID(ids.toast) as HTMLTextAreaElement);
+    this.updateQuickPrompts(qs(ids.userInput) as HTMLTextAreaElement);
   }
 
   // ─── Render: lib doc list ─────────────────────────────────────────────────
@@ -1938,15 +1942,15 @@ export class Library extends Common {
     el('p', { textContent: 'Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.' })
   );
 
-  protected buildMsgEl(msg: LibMessage): HTMLElement {
+  protected buildMsgEl(msg: ClaudeMessage): HTMLElement {
     const wrap = el('div', { className: `msg msg--${msg.role}` });
     const bubble = el('div', { className: 'msg_bubble' });
-    bubble.innerHTML = renderMarkdown(msg.content);
+    bubble.innerHTML = renderMarkdown((msg.content as ChatBlock).text);
     wrap.append(el('div', { className: 'msg_label', textContent: msg.role === 'user' ? 'Vous' : 'Lex Assistant' }), bubble);
     if (msg.role === 'assistant') {
       const acts = el('div', { className: 'msg_actions' });
       const copy = el('button', { className: 'msg-action-btn', textContent: 'Copier' });
-      copy.onclick = () => { navigator.clipboard.writeText(msg.content); toast('Copié.', 'info', 1500); };
+      copy.onclick = () => { navigator.clipboard.writeText((msg.content as ChatBlock).text); toast('Copié.', 'info', 1500); };
       acts.appendChild(copy);
       wrap.appendChild(acts);
     }
@@ -1964,11 +1968,11 @@ export class Library extends Common {
 
   // ─── Send message ─────────────────────────────────────────────────────────
 
-  protected async sendMessage(ta: HTMLTextAreaElement, sendBtn: HTMLButtonElement): Promise<void> {
-    if (!ta || !sendBtn) return;
-    const text = ta.value.trim();
+  protected async sendMessage(chatInput: HTMLTextAreaElement, sendBtn: HTMLButtonElement): Promise<void> {
+    if (!chatInput || !sendBtn) return;
+    const text = chatInput.value.trim();
     if (!text) return;
-    ta.value = '';
+    chatInput.value = '';
 
     let docs: LibDocumentMeta[] = [];
     if (this._activeDomain === 'all') {
@@ -1981,9 +1985,9 @@ export class Library extends Common {
       docs = await this.loadDomainMeta(this._activeDomain);
     }
 
-    const userMsg: LibMessage = {
+    const userMsg: ClaudeMessage = {
       id: uid(), role: 'user',
-      content: text,
+      content: { type: 'text', text: text },
       timestamp: Date.now(),
       domain: this._activeDomain
     };
@@ -1993,21 +1997,27 @@ export class Library extends Common {
     const typing = this.appendTypingTo(ids.libChatArea, 'Consultation de la bibliothèque…');
     sendBtn.disabled = true;
 
-    const history = this._messages.slice(-21, -1).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    const history = this._messages.slice(-21, -1);
 
     try {
       const response = await this.claude.callClaudeLib(
         this._activeDomain, {
         domain: this._activeDomain,
         docs,
-        skills: this.skills,
+          skills: this._skills,
         userMessage: text,
         history,
-        knowledgeBase: this._libKb ?? undefined,
+          knowledgeBase: this._kb ?? undefined,
         readFile: this.readLibFile,
       });
       typing.remove();
-      const asstMsg: LibMessage = { id: uid(), role: 'assistant', content: response, timestamp: Date.now(), domain: this._activeDomain };
+      const asstMsg: ClaudeMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: { type: 'text', text: response },
+        timestamp: Date.now(),
+        domain: this._activeDomain
+      };
       this._messages.push(asstMsg);
       this.appendMsg(this.buildMsgEl(asstMsg));
       await this.writeLibConversation(this._messages);
@@ -2017,7 +2027,7 @@ export class Library extends Common {
       this._messages.pop();
     } finally {
       sendBtn.disabled = false;
-      ta.focus();
+      chatInput.focus();
     }
   }
 

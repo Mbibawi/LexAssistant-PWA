@@ -8,12 +8,6 @@ const NATIVE_MIMES = new Set([
     'text/plain', 'text/html', 'text/markdown',
 ]);
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function docPart(name, mime, base64) {
-    if (NATIVE_MIMES.has(mime)) {
-        return { type: 'document', source: { type: 'base64', media_type: mime, data: base64 }, title: name };
-    }
-    return { type: 'text', text: `[Fichier joint : ${name} — format non lu nativement]` };
-}
 /** Convert any string to base64 (UTF-8 safe) */
 function strToBase64(text) {
     return btoa(encodeURIComponent(text));
@@ -137,10 +131,31 @@ export class ClaudeAPI {
                 parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
             }
             catch {
-                parts.push({ type: 'text', text: `[Fichier "${doc.name}" inaccessible sur OneDrive]` });
+                parts.push({
+                    type: 'text',
+                    text: `[Fichier "${doc.name}" inaccessible sur OneDrive]`
+                });
             }
         }
         return parts;
+        function docPart(name, mime, base64) {
+            if (NATIVE_MIMES.has(mime)) {
+                return {
+                    type: 'document',
+                    source: {
+                        type: 'base64',
+                        media_type: mime,
+                        data: base64
+                    },
+                    title: name
+                };
+            }
+            ;
+            return {
+                type: 'text',
+                text: `[Fichier joint : ${name} — format non lu nativement]`
+            };
+        }
     }
     // ─── Duplicate detection ──────────────────────────────────────────────────
     /**
@@ -185,8 +200,8 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
      * Loads the most recent knowledge base file for a case folder.
      * Returns null if none exists.
      */
-    async loadLatestCaseKb(folderPath, listFiles, readFile) {
-        const items = await listFiles(folderPath).catch(() => []);
+    async loadLatestCaseKb(folderPath, items, readFile) {
+        //const items = await listFiles(folderPath).catch(() => [] as GraphDriveItem[]);
         const kbFiles = items
             .filter((i) => i.file && i.name.startsWith('_kb_') && i.name.endsWith('.md'))
             .sort((a, b) => b.name.localeCompare(a.name)); // lexicographic = chronological
@@ -194,7 +209,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
             return null;
         const latest = kbFiles[0];
         const buf = await readFile(`${folderPath}/${latest.name}`);
-        return { content: new TextDecoder().decode(buf), filename: latest.name };
+        return new TextDecoder().decode(buf);
     }
     // ─── Knowledge base — Library ─────────────────────────────────────────────
     async buildLibKnowledgeBase(domain, docs, readFile, existingKbDocs = [], appendMode = false) {
@@ -216,10 +231,10 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     }
     // ─── Case conversation ────────────────────────────────────────────────────
     async callClaudeCase(folderName, opts) {
-        const system = [{
-                type: 'text',
-                text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
-            }];
+        const system = {
+            type: 'text',
+            text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
+        };
         // If a knowledge base is available, inject it as a cached document
         // instead of re-sending all raw files — token optimization
         let content;
@@ -242,31 +257,45 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     }
     // ─── Library conversation ─────────────────────────────────────────────────
     async callClaudeLib(folderName, opts) {
-        const system = [{
-                type: 'text',
-                text: buildLibSystem(opts.domain, opts.skills),
-            }];
+        const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
+        const system = {
+            type: 'text',
+            text: buildLibSystem(domain, skills),
+        };
         let firstUserContent;
-        if (opts.knowledgeBase) {
+        if (knowledgeBase) {
             firstUserContent = [
                 {
                     type: 'document',
-                    source: { type: 'base64', media_type: 'text/markdown', data: strToBase64(opts.knowledgeBase) },
-                    title: `Bibliothèque juridique — ${opts.domain}`,
-                },
+                    source: {
+                        type: 'base64',
+                        media_type: 'text/markdown',
+                        data: strToBase64(knowledgeBase)
+                    },
+                    title: `Bibliothèque juridique — ${domain}`,
+                }
             ];
         }
         else {
-            firstUserContent = await this.buildDocParts(folderName, opts.docs, opts.readFile);
+            firstUserContent = await this.buildDocParts(folderName, docs, readFile);
         }
         // Rebuild history: inject docs only in the first user turn
-        const messages = opts.history.length
+        const messages = history.length
             ? [
-                { role: 'user', content: [...firstUserContent, { type: 'text', text: opts.history[0].content }] },
-                ...opts.history.slice(1).map((h) => ({ role: h.role, content: h.content })),
-                { role: 'user', content: opts.userMessage },
+                {
+                    role: 'user',
+                    content: [...firstUserContent, history[0].content]
+                },
+                ...history,
+                {
+                    role: 'user',
+                    content: { type: 'text', text: userMessage }
+                },
             ]
-            : [{ role: 'user', content: [...firstUserContent, { type: 'text', text: opts.userMessage }] }];
+            : [{
+                    role: 'user',
+                    content: [...firstUserContent, { type: 'text', text: userMessage }]
+                }];
         const data = await this.callProxy(this.claudeBody(4096, messages, system));
         return this.extractText(data);
     }
@@ -275,7 +304,12 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     // This method exists so Cases/Library can request a structured redaction
     // and receive clean markdown ready for generateDocx().
     async requestRedaction(prompt, system, contextParts = []) {
-        const data = await this.callProxy(this.claudeBody(6000, [{ role: 'user', content: [...contextParts, { type: 'text', text: prompt }] }], [{ type: 'text', text: system }]));
+        const data = await this.callProxy(this.claudeBody(6000, [
+            {
+                role: 'user',
+                content: [...contextParts, { type: 'text', text: prompt }]
+            }
+        ], { type: 'text', text: system }));
         return this.extractText(data);
     }
     toBase64(buffer) {
