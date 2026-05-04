@@ -132,7 +132,9 @@ export class ClaudeAPI {
    * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
    * and inject the anthropic-version header ourselves since gFetch won't add it.
    */
-  private async callProxy(messages: ClaudeConversation, api: string = 'claude'): Promise<ClaudeResponse> {
+  private async callProxy(claudeBody: ClaudeConversation, api: string = 'claude'): Promise<ClaudeResponse> {
+    const body = JSON.stringify({ path: this.PATH, claudeBody: claudeBody });
+    console.log('claudeBody: ', claudeBody)
     const resp = await fetch(
       `${this.CLAUDE_PROXY}${api}`,
       {
@@ -141,7 +143,7 @@ export class ClaudeAPI {
           'Content-Type': 'application/json',
           'anthropic-version': "2024-06-01",
         },
-        body: JSON.stringify({ path: this.PATH, messages: messages }),
+        body: body,
       }
     );
 

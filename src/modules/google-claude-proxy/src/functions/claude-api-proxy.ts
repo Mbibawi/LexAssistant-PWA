@@ -1,5 +1,5 @@
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
-const CLAUDE_BASE_URL = "https://api.anthropic.com";
+const CLAUDE_BASE_URL = "https://api.anthropic.com/";
 
 export const main = async (req, res) => {
     setCorsHeaders(res);
@@ -23,20 +23,23 @@ export const main = async (req, res) => {
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 async function handleClaudeProxy(req, res) {
-    const body = JSON.parse(req.body);
-    const { claudePath, messages } = body;
-    if (!claudePath) {
+    const { path, claudeBody } = req.body;
+    if (!path) {
         res.status(400).json({ error: "Missing body parameter: path" });
         return;
     }
+    console.log('path: ', path);
+    console.log('claudeBody: ', claudeBody);
 
-    const claudeUrl = `${CLAUDE_BASE_URL}${claudePath}`;
+    const claudeUrl = `${CLAUDE_BASE_URL}${path}`;
+
+    console.log('claudeUrl: ', claudeUrl)
 
     try {
         const upstream = await fetch(claudeUrl, {
             method: req.method,
             headers: buildForwardHeaders(req.headers),
-            body: JSON.stringify(messages)
+            body: JSON.stringify(claudeBody)
         });
 
         res.status(upstream.status);
