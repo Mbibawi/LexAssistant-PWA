@@ -240,10 +240,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     }
     // ─── Case conversation ────────────────────────────────────────────────────
     async callClaudeCase(folderName, opts) {
-        const system = {
-            type: 'text',
-            text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
-        };
+        const system = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
         // If a knowledge base is available, inject it as a cached document
         // instead of re-sending all raw files — token optimization
         let content;
@@ -267,10 +264,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     // ─── Library conversation ─────────────────────────────────────────────────
     async callClaudeLib(folderName, opts) {
         const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
-        const system = {
-            type: 'text',
-            text: buildLibSystem(domain, skills),
-        };
+        const system = buildLibSystem(domain, skills);
         let firstUserContent;
         if (knowledgeBase) {
             firstUserContent = [
@@ -318,7 +312,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 role: 'user',
                 content: [...contextParts, { type: 'text', text: prompt }]
             }
-        ], { type: 'text', text: system }));
+        ], system));
         return this.extractText(data);
     }
     toBase64(buffer) {

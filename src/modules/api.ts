@@ -157,7 +157,7 @@ export class ClaudeAPI {
   private claudeBody(
     max: number,
     messages: ClaudeMessage[],
-    system?: ChatBlock,
+    system?: string,
   ): ClaudeConversation {
     const body: ClaudeConversation = { model: this.MODEL, max_tokens: max, messages };
     if (system) body.system = system;
@@ -315,10 +315,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Case conversation ────────────────────────────────────────────────────
 
   async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string> {
-    const system: ChatBlock = {
-      type: 'text',
-      text: buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode),
-    };
+    const system = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
 
     // If a knowledge base is available, inject it as a cached document
     // instead of re-sending all raw files — token optimization
@@ -347,10 +344,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
 
   async callClaudeLib(folderName: string | LibDomain, opts: LibCallOpts): Promise<string> {
     const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
-    const system: ChatBlock = {
-      type: 'text',
-      text: buildLibSystem(domain, skills),
-    };
+    const system = buildLibSystem(domain, skills);
 
     let firstUserContent: ContentPart[];
     if (knowledgeBase) {
@@ -410,7 +404,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
             content: [...contextParts, { type: 'text', text: prompt }]
           }
         ],
-        { type: 'text', text: system },
+        system,
       ),
     );
     return this.extractText(data);

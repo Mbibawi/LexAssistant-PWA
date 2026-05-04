@@ -170,7 +170,7 @@ type ChatBlock = {
 type ClaudeConversation = {
   model: string;
   max_tokens: number;
-  system?: ChatBlock;
+  system?: string;
   messages: ClaudeMessage[];
 };
 
