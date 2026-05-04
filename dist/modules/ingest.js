@@ -20,31 +20,23 @@ export function isSupported(name) {
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
     return ext in SUPPORTED_EXTS;
 }
-export function guessKind(name) {
-    const l = name.toLowerCase();
-    if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l))
-        return 'jurisprudence';
-    if (/doctrine|article|revue|doctr/.test(l))
-        return 'doctrine';
-    return 'piece';
-}
-export function makeCaseDocMeta(file) {
+export function makeDocMeta(file) {
     return {
         name: file.name,
         kind: guessKind(file.name),
         mimeType: guessMime(file.name, file.type),
         sizeBytes: file.size,
         addedAt: Date.now(),
-    };
-}
-export function makeLibDocMeta(file) {
-    return {
-        name: file.name,
-        mimeType: guessMime(file.name, file.type),
-        sizeBytes: file.size,
-        addedAt: Date.now(),
         tags: [],
     };
+    function guessKind(name) {
+        const l = name.toLowerCase();
+        if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l))
+            return 'jurisprudence';
+        if (/doctrine|article|revue|doctr/.test(l))
+            return 'doctrine';
+        return 'piece';
+    }
 }
 export function formatSize(bytes) {
     if (bytes < 1024)
@@ -52,10 +44,6 @@ export function formatSize(bytes) {
     if (bytes < 1024 * 1024)
         return `${(bytes / 1024).toFixed(0)} Ko`;
     return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
-}
-export function kindLabel(kind) {
-    const m = { piece: 'Pièce', jurisprudence: 'Jurisprudence', doctrine: 'Doctrine', redige: 'Rédigé' };
-    return m[kind];
 }
 export function mimeIcon(mime) {
     if (mime === 'application/pdf')

@@ -25,7 +25,7 @@ export function base64ToStr(b64: string): string {
 }
 
 /** Fingerprint a document for duplicate detection */
-function docFingerprint(doc: CaseDocumentMeta | LibDocumentMeta): string {
+function docFingerprint(doc: DocumentMeta): string {
   return [doc.name, doc.mimeType, doc.sizeBytes, doc.addedAt].join('|');
 }
 
@@ -163,7 +163,7 @@ export class ClaudeAPI {
 
   private async buildDocParts(
     folderName: string | LibDomain,
-    docs: (CaseDocumentMeta | LibDocumentMeta)[],
+    docs: DocumentMeta[],
     readFile: (folderName: string | LibDomain, name: string) => Promise<ArrayBuffer>,
   ): Promise<ContentPart[]> {
     const parts: ContentPart[] = [];
@@ -208,9 +208,9 @@ export class ClaudeAPI {
    * If duplicates are found, prompts the user to confirm resending them.
    */
   async filterNewDocs(
-    incoming: (CaseDocumentMeta | LibDocumentMeta)[],
-    existing: (CaseDocumentMeta | LibDocumentMeta)[],
-  ): Promise<(CaseDocumentMeta | LibDocumentMeta)[]> {
+    incoming: DocumentMeta[],
+    existing: DocumentMeta[],
+  ): Promise<DocumentMeta[]> {
     const existingPrints = new Set(existing.map(docFingerprint));
     const duplicates = incoming.filter((d) => existingPrints.has(docFingerprint(d)));
     const fresh = incoming.filter((d) => !existingPrints.has(docFingerprint(d)));
@@ -233,9 +233,9 @@ export class ClaudeAPI {
    * Returns the OneDrive path where it was saved.
    */
   async buildCaseKnowledgeBase(
-    meta: CaseMeta,
+    meta: FolderMeta,
     readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
-    existingKbDocs: CaseDocumentMeta[] = [],
+    existingKbDocs: DocumentMeta[] = [],
     appendMode: Boolean = false,
   ): Promise<string> {
     const docsToSend = await this.filterNewDocs(meta.documents, existingKbDocs);
@@ -243,7 +243,7 @@ export class ClaudeAPI {
       throw new Error('Aucun nouveau document à analyser.');
     }
 
-    const docParts = await this.buildDocParts(meta.folderName, docsToSend as CaseDocumentMeta[], readFile);
+    const docParts = await this.buildDocParts(meta.folderName, docsToSend as DocumentMeta[], readFile);
     const prompt = appendMode
       ? `Tu complètes une base de connaissance juridique existante avec de nouveaux documents.
 Produis un complément en markdown structuré, couvrant uniquement les nouveaux éléments apportés par les documents fournis.
@@ -279,9 +279,9 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
 
   async buildLibKnowledgeBase(
     domain: LibDomain | 'all',
-    docs: LibDocumentMeta[],
+    docs: DocumentMeta[],
     readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
-    existingKbDocs: LibDocumentMeta[] = [],
+    existingKbDocs: DocumentMeta[] = [],
     appendMode: Boolean = false,
   ): Promise<string> {
     const docsToSend = await this.filterNewDocs(docs, existingKbDocs);

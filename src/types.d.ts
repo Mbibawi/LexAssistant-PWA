@@ -85,23 +85,14 @@ type LibCallOpts = {
   readFile: (folderName: LibDomain | string, fileName: string) => Promise<ArrayBuffer>;
 };
 
-type CaseMeta = {
-  name: string;                // Display name
-  folderName: string;          // OneDrive folder name (sanitised)
-  domain: string;
-  status: 'active' | 'closed' | 'suspended';
-  createdAt: number;
-  updatedAt: number;
-  // Document registry — file names + metadata (no base64)
-  documents: CaseDocumentMeta[];
-}
 
-type CaseDocumentMeta = {
-  name: string;                // exact filename on OneDrive
-  kind: DocKind;
+type DocumentMeta = {
+  name: string;
   mimeType: string;
   sizeBytes: number;
+  kind?: DocKind;
   addedAt: number;
+  tags?: string[];
 }
 
 // ─── _notes.json — corrections & permanent notes, stored in case folder ───────
@@ -138,31 +129,14 @@ type ClaudeMessage = {
 // ─── In-memory case object (assembled from CaseMeta + folder listing) ─────────
 
 type FolderMeta = {
-  folderName: string; // primary key — the OneDrive folder name
-  name: string;
-  domain: string;
-  status: "active" | "closed" | "suspended";
-  createdAt: number;
-  updatedAt: number;
-  documents: CaseDocumentMeta[];
-};
-
-//  Legal Library ─────────────────────────────────────────────────
-
-type LibDocumentMeta = {
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  addedAt: number;
-  tags: string[];
+  folderName: string;          // primary key — the OneDrive folder name
+  name: string;                     // Display name
+  domain?: string | null;                 // legal domain of the case
+  status: 'active' | 'closed' | 'suspended';
+  createdAt: number;           // creation timestamp
+  updatedAt: number;           // last modification timestamp
+  documents: DocumentMeta[];
 }
-
-// _meta.json in each Bibliotheque/<domain>/ folder
-type LibDomainMeta = {
-  domain: LibDomain;
-  documents: LibDocumentMeta[];
-}
-
 
 // ─── OneDrive / Graph ─────────────────────────────────────────────────────────
 

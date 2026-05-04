@@ -22,31 +22,23 @@ export function isSupported(name: string): boolean {
   return ext in SUPPORTED_EXTS;
 }
 
-export function guessKind(name: string): DocKind {
-  const l = name.toLowerCase();
-  if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l)) return 'jurisprudence';
-  if (/doctrine|article|revue|doctr/.test(l)) return 'doctrine';
-  return 'piece';
-}
 
-export function makeCaseDocMeta(file: File): CaseDocumentMeta {
+export function makeDocMeta(file: File): DocumentMeta {
   return {
     name:      file.name,
-    kind:      guessKind(file.name),
-    mimeType:  guessMime(file.name, file.type),
+    kind: guessKind(file.name),
+    mimeType: guessMime(file.name, file.type),
     sizeBytes: file.size,
     addedAt:   Date.now(),
+    tags: [],
   };
-}
 
-export function makeLibDocMeta(file: File): LibDocumentMeta {
-  return {
-    name:      file.name,
-    mimeType:  guessMime(file.name, file.type),
-    sizeBytes: file.size,
-    addedAt:   Date.now(),
-    tags:      [],
-  };
+  function guessKind(name: string): DocKind {
+    const l = name.toLowerCase();
+    if (/jurisp|arrêt|arret|décision|cass|Cass|conseil.d.état/.test(l)) return 'jurisprudence';
+    if (/doctrine|article|revue|doctr/.test(l)) return 'doctrine';
+    return 'piece';
+  }
 }
 
 
@@ -56,10 +48,6 @@ export function formatSize(bytes: number): string {
   return `${(bytes/1024/1024).toFixed(1)} Mo`;
 }
 
-export function kindLabel(kind: DocKind): string {
-  const m: Record<DocKind,string> = { piece:'Pièce', jurisprudence:'Jurisprudence', doctrine:'Doctrine', redige:'Rédigé' };
-  return m[kind];
-}
 
 export function mimeIcon(mime: string): string {
   if (mime === 'application/pdf')            return '📄';

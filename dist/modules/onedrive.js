@@ -25,7 +25,7 @@
  *     Bibliotheque/_conversation.json ← "all" domain conversation
  */
 import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
-import { isSupported, mimeLabel, mimeIcon, formatSize, makeCaseDocMeta, makeLibDocMeta, guessKind, kindLabel } from './ingest.js';
+import { isSupported, mimeLabel, mimeIcon, formatSize, makeDocMeta } from './ingest.js';
 import { oneDrive, ids } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
@@ -470,7 +470,7 @@ class Folders extends OneDriveAuth {
      * List all items in a folder.
      * @param folderPath The path to the folder.
      */
-    async listAllFolderItems(folderPath) {
+    async listFolderItems(folderPath) {
         //return this.oneDriveProxy('list', 'GET', { path: folderPath });
         const resp = await this.gFetch(`${folderPath}/children?$select=name,size,file,folder,webUrl,lastModifiedDateTime&$top=500`);
         const data = (await resp.json());
@@ -483,7 +483,7 @@ class Folders extends OneDriveAuth {
      */
     async listSubFolders(parentRelPath) {
         try {
-            const items = await this.listAllFolderItems(`${this.root}/${parentRelPath}`);
+            const items = await this.listFolderItems(`${this.root}/${parentRelPath}`);
             return items.filter((f) => f.folder).map((i) => i.name);
         }
         catch {
@@ -496,7 +496,7 @@ class Folders extends OneDriveAuth {
      * @param folderAbsPath The absolute path to the folder.
      */
     async listFiles(folderAbsPath) {
-        const items = await this.listAllFolderItems(folderAbsPath);
+        const items = await this.listFolderItems(folderAbsPath);
         return items.filter((i) => i.file);
     }
     /**
@@ -611,15 +611,16 @@ class Common extends Folders {
     _kb = null; // cached knowledge base content
     _notes = [];
     _foldersMeta = [];
+    folderMeta = async (folderName) => await this.readMeta(folderName);
     metaPath = (f) => `${this.mainPath(f)}/_meta.json`;
     notesPath = (f) => `${this.mainPath(f)}/_notes.json`;
     convPath = (f) => `${this.mainPath(f)}/_conversation.json`;
     async readMeta(f) {
         return await this.readJson(this.metaPath(f));
     }
-    async writeMeta(f, meta) {
-        await this.ensureFolder(this.mainPath(f));
-        await this.writeJson(this.metaPath(f), meta);
+    async writeMeta(name, meta) {
+        await this.ensureFolder(this.mainPath(name));
+        await this.writeJson(this.metaPath(name), meta);
     }
     async readConversation(path) {
         const messages = await this.readJson(this.convPath(path));
@@ -646,7 +647,7 @@ class Common extends Folders {
     async fetchSkills() {
         const path = `${this.root}/${FOLDER_SKILLS}`;
         try {
-            const items = await this.listAllFolderItems(path);
+            const items = await this.listFolderItems(path);
             const skills = [];
             for (const item of items.filter((i) => !i.folder)) {
                 const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
@@ -671,9 +672,8 @@ class Common extends Folders {
         const statusEl = byID(ids.oneDriveStatus);
         if (!statusEl)
             return;
-        const userName = this.userName;
-        if (userName) {
-            statusEl.textContent = `☁ ${userName}`;
+        if (this.userName) {
+            statusEl.textContent = `☁ ${this.userName}`;
             statusEl.className = 'od-status od-status--connected';
         }
         else {
@@ -842,14 +842,15 @@ export class Cases extends Common {
         const { userInput, sendBtn } = this.buildUI(content);
         // Wire all scenario-specific UI
         this.setupBarsBtns();
+        this.setupInputArea(userInput, sendBtn);
+        if (!this.userName)
+            await oneDrive.signIn();
         if (!this.userName)
             return this.showNotConnected();
         this.updateODStatus();
-        this.setupInputArea(userInput, sendBtn);
         await this.loadAllSubFolders(); //!this must come before renderChat(), because it sets this._activeCase
-        this.renderChat(this._messages, this._chatBody);
-        this.updateSkillIndicator();
         await this.fetchSkills();
+        this.updateSkillIndicator();
     }
     buildUI(content) {
         content.innerHTML = '';
@@ -949,29 +950,27 @@ export class Cases extends Common {
         const subFolders = await this.listSubFolders(this.mainFolder);
         this._foldersMeta = [];
         await Promise.all(subFolders.map(async (folderName) => {
-            const meta = await this.readMeta(folderName);
+            const meta = await this.folderMeta(folderName);
             if (!meta)
                 return;
-            const { name, domain, status, createdAt, updatedAt, documents } = meta;
-            this._foldersMeta.push({
-                folderName,
-                name,
-                domain,
-                status,
-                createdAt,
-                updatedAt,
-                documents: documents ?? []
-            });
+            this._foldersMeta.push(meta);
         }));
-        this._foldersMeta.sort((a, b) => b.updatedAt - a.updatedAt);
         if (!this._foldersMeta.length)
-            return this.showEmptyState();
-        await this.selectCase(this._foldersMeta[0]); //!this must come before the case list is rendered
+            return;
+        this._foldersMeta.sort((a, b) => b.updatedAt - a.updatedAt);
+        const folderMeta = this.folderMeta;
+        const caseMeta = await findCaseMeta(this._foldersMeta);
+        if (!caseMeta)
+            return alert('We could not find a case with the folder name  you provided');
+        await this.selectCase(caseMeta); //!this must come before the case list is rendered
         this.renderCaseList();
+        async function findCaseMeta(metas) {
+            const folderName = prompt("Enter the folder name of the case you want to select") || '';
+            return metas.find(meta => meta.folderName === folderName) ?? await folderMeta(folderName) ?? null;
+        }
     }
     // ─── Select case ──────────────────────────────────────────────────────────
     async selectCase(caseMeta) {
-        //const c = this._foldersMeta.find((x) => x.folderName === folderName);
         if (!caseMeta)
             return;
         const { folderName, name, domain } = caseMeta;
@@ -981,14 +980,14 @@ export class Cases extends Common {
         this._messages = await this.readConversation(folderName);
         // Try to load the latest knowledge base silently
         const folderPath = this.mainPath(folderName);
-        this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listAllFolderItems(folderPath), this.readFilePath);
+        this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listFolderItems(folderPath), this.readFilePath);
         qsa('.case-item').forEach((el) => el.classList.toggle('active', el.dataset.folder === caseMeta.folderName));
         const nameEl = byID(ids.topBarCaseName);
         const domainEl = byID(ids.topBarCaseDomain);
         if (nameEl)
             nameEl.textContent = name;
         if (domainEl)
-            domainEl.textContent = domain;
+            domainEl.textContent = domain || null;
         this.renderNoteBar();
         this.renderDocList();
         this.renderChat(this._messages, this._chatBody);
@@ -996,7 +995,7 @@ export class Cases extends Common {
     }
     async refreshCaseFromOneDrive() {
         if (!this._activeCase)
-            return;
+            return await this.loadAllSubFolders();
         try {
             const items = await this.listFiles(this.mainPath(this._activeCase.folderName));
             let added = 0;
@@ -1005,11 +1004,7 @@ export class Cases extends Common {
                     continue;
                 if (this._activeCase.documents.some((d) => d.name === item.name))
                     continue;
-                this._activeCase.documents.push({
-                    name: item.name, kind: guessKind(item.name),
-                    mimeType: item.file.mimeType || 'application/octet-stream',
-                    sizeBytes: item.size ?? 0, addedAt: Date.now(),
-                });
+                this._activeCase.documents.push(makeDocMeta(item));
                 added++;
             }
             if (added > 0) {
@@ -1059,13 +1054,13 @@ export class Cases extends Common {
         list.innerHTML = '';
         const labels = { active: 'En cours', closed: 'Clôturé', suspended: 'Suspendu' };
         this._foldersMeta
-            .forEach(_case => {
-            const { folderName, status, domain, name } = _case;
+            .forEach(meta => {
+            const { folderName, status, domain, name } = meta;
             const item = el('div', { className: 'case-item' + (folderName === this._activeCase?.folderName ? ' active' : '') });
             item.dataset.folder = folderName;
             item.append(el('span', { className: 'case-item_name', textContent: name }), el('span', { className: 'case-item_domain', textContent: domain }), el('span', { className: `case-item_status case-item_status--${status}`, textContent: labels[status] }));
-            item.onclick = () => this.selectCase(_case);
-            item.addEventListener('contextmenu', (e) => { e.preventDefault(); this.openCaseContextMenu(_case, e.clientX, e.clientY); });
+            item.onclick = () => this.selectCase(meta);
+            item.addEventListener('contextmenu', (e) => { e.preventDefault(); this.openCaseContextMenu(meta, e.clientX, e.clientY); });
             list.appendChild(item);
         });
     }
@@ -1098,7 +1093,7 @@ export class Cases extends Common {
                 this.updateDocCount();
                 toast('Document retiré de l\'index.', 'info');
             };
-            item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, el('span', { className: `doc-kind doc-kind--${doc.kind}`, textContent: kindLabel(doc.kind) }), del);
+            item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, el('span', { className: `doc-kind doc-kind--${doc.kind}`, textContent: this.kindLabel(doc.kind) }), del);
             list.appendChild(item);
         }
     }
@@ -1250,11 +1245,11 @@ export class Cases extends Common {
     setupBarsBtns() {
         const btn = (id) => byID(id);
         this.onClick(btn(ids.btnNewSidebar), () => this.openCaseFormModal(null));
+        this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
         this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
         this.onClick(btn(ids.settings), () => this.openSettingsModal());
         this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
         this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
-        this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
         this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
         this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
         this.onClick(btn(ids.btnCaseSummary), async () => {
@@ -1306,7 +1301,7 @@ export class Cases extends Common {
                 }
                 try {
                     const ab = await file.arrayBuffer();
-                    const meta = makeCaseDocMeta(file);
+                    const meta = makeDocMeta(file);
                     await this.writeCaseFile(this._activeCase.folderName, file.name, ab, meta.mimeType);
                     if (!this._activeCase.documents.some((d) => d.name === file.name)) {
                         this._activeCase.documents.push(meta);
@@ -1430,7 +1425,7 @@ export class Cases extends Common {
     async deleteCaseIndex(folderName) {
         if (!await confirm('Supprimer ce dossier ? Les fichiers OneDrive sont conservés, seuls les fichiers Lex Assistant (_meta, _notes, _conversation, _kb_*) sont supprimés.'))
             return;
-        const items = await this.listAllFolderItems(this.mainPath(folderName));
+        const items = await this.listFolderItems(this.mainPath(folderName));
         const toDelete = items.filter((i) => i.file && (i.name.startsWith('_meta') || i.name.startsWith('_notes') || i.name.startsWith('_conversation') || i.name.startsWith('_kb_')));
         await Promise.all(toDelete.map((i) => this.deleteFilePath(`${this.mainPath(folderName)}/${i.name}`).catch(() => { })));
         this._foldersMeta = this._foldersMeta.filter((c) => c.folderName !== folderName);
@@ -1500,6 +1495,12 @@ export class Cases extends Common {
             return;
         area.innerHTML = '';
         area.appendChild(el('div', { className: 'empty-state' }, el('div', { className: 'empty-icon', textContent: '⚖️' }), el('h2', { textContent: 'Bienvenue dans Lex Assistant' }), el('p', { textContent: 'Connectez OneDrive et créez votre premier dossier.' }), (() => { const b = el('button', { className: 'btn btn--primary', textContent: '+ Nouveau dossier' }); b.onclick = () => this.openCaseFormModal(null); return b; })()));
+    }
+    kindLabel(kind) {
+        if (!kind)
+            return '';
+        const m = { piece: 'Pièce', jurisprudence: 'Jurisprudence', doctrine: 'Doctrine', redige: 'Rédigé' };
+        return kind ? m[kind] : 'Inconnu';
     }
 }
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
@@ -1588,9 +1589,6 @@ export class Library extends Common {
         return this.DOMAINS.find((d) => d.id === id)?.label ?? id;
     }
     // ─── OneDrive CRUD ────────────────────────────────────────────────────────
-    async _readLibConversation() {
-        return (await this.readJson(this._convPath()))?.messages ?? [];
-    }
     writeLibConversation(messages) {
         return this.writeJson(this._convPath(), { messages });
     }
@@ -1605,16 +1603,11 @@ export class Library extends Common {
         await this.writeFileLarge(`${this.mainPath(domain)}/${fileName}`, data, mimeType);
     }
     // ─── Domain meta ──────────────────────────────────────────────────────────
-    async loadDomainMeta(domain) {
-        if (this._domainDocs.has(domain))
-            return this._domainDocs.get(domain);
-        const docs = (await this.readMeta(domain))?.documents ?? [];
-        this._domainDocs.set(domain, docs);
-        return docs;
-    }
-    async saveDomainMeta(domain, docs) {
-        this._domainDocs.set(domain, docs);
-        await this.writeMeta(domain, { domain, documents: docs });
+    async saveDomainMeta(domain, meta) {
+        if (!meta)
+            return;
+        this._domainDocs.set(domain, meta.documents);
+        await this.writeMeta(domain, meta);
     }
     // ─── Init ─────────────────────────────────────────────────────────────────
     async initRootStructure() {
@@ -1627,10 +1620,12 @@ export class Library extends Common {
     async syncDomainFromOneDrive(domain) {
         if (!oneDrive.account)
             await oneDrive.signIn();
-        //if (!oneDrive.userOid) await oneDrive.signIn(this.msal);
-        const items = await this.listLibFiles(domain);
-        const existing = await this.loadDomainMeta(domain);
         let added = 0;
+        const items = await this.listLibFiles(domain);
+        const meta = await this.folderMeta(domain);
+        if (!meta)
+            return added;
+        const existing = meta.documents;
         for (const item of items) {
             if (!item.file || !isSupported(item.name))
                 continue;
@@ -1640,7 +1635,7 @@ export class Library extends Common {
             added++;
         }
         if (added > 0)
-            await this.saveDomainMeta(domain, existing);
+            await this.saveDomainMeta(domain, meta);
         return added;
     }
     async syncCurrentDomain() {
@@ -1726,10 +1721,10 @@ export class Library extends Common {
         this._activeDomain = domain;
         this._kb = null;
         if (domain !== 'all') {
-            await this.loadDomainMeta(domain);
+            await this.folderMeta(domain);
             // Try to load the latest KB for this domain
             const folderPath = this.mainPath(domain);
-            this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listAllFolderItems(folderPath), this.readFilePath);
+            this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listFolderItems(folderPath), this.readFilePath);
         }
         this._messages = await this.readConversation(domain).catch(() => []);
         this.renderDomainPills();
@@ -1741,19 +1736,17 @@ export class Library extends Common {
         this.updateQuickPrompts(qs(ids.userInput));
     }
     // ─── Render: lib doc list ─────────────────────────────────────────────────
+    getDocsMeta(domain) {
+        if (domain === 'all')
+            return this.DOMAINS.map(d => this._domainDocs.get(d.id)).flat().filter(docs => docs !== undefined);
+        return this._domainDocs.get(domain) ?? [];
+    }
     renderDocList() {
         const list = byID(ids.libDocList);
         if (!list)
             return;
         list.innerHTML = '';
-        let docs = [];
-        if (this._activeDomain === 'all') {
-            for (const [, d] of this._domainDocs)
-                docs.push(...d);
-        }
-        else {
-            docs = this._domainDocs.get(this._activeDomain) ?? [];
-        }
+        let docs = this.getDocsMeta(this._activeDomain);
         docs = docs.sort((a, b) => b.addedAt - a.addedAt);
         if (!docs.length) {
             list.appendChild(el('div', { className: 'lib-doc-empty', textContent: 'Aucun document. Ajoutez ou synchronisez.' }));
@@ -1766,13 +1759,17 @@ export class Library extends Common {
             const del = el('button', { className: 'doc-delete', textContent: '×', title: 'Retirer de la bibliothèque' });
             del.onclick = async (e) => {
                 e.stopPropagation();
-                if (!await confirm(`Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`))
+                if (!confirm(`Retirer "${doc.name}" de la bibliothèque ? (Fichier OneDrive conservé.)`))
                     return;
                 for (const [dom, list] of this._domainDocs) {
                     const idx = list.findIndex((d) => d.name === doc.name);
                     if (idx >= 0) {
                         list.splice(idx, 1);
-                        await this.saveDomainMeta(dom, list);
+                        const meta = await this.folderMeta(dom);
+                        if (!meta)
+                            return;
+                        meta.documents = list;
+                        await this.saveDomainMeta(dom, meta);
                         break;
                     }
                 }
@@ -1783,6 +1780,9 @@ export class Library extends Common {
             item.append(el('span', { className: 'doc-icon', textContent: mimeIcon(doc.mimeType) }), info, del);
             list.appendChild(item);
         }
+    }
+    findDocument(name) {
+        return Array.from(this._domainDocs.values()).flat().find((d) => d.name === name);
     }
     // ─── Render: lib chat ─────────────────────────────────────────────────────
     _chatBody = el('div', { className: 'empty-state' }, el('div', { className: 'empty-icon', textContent: '📚' }), el('h2', { textContent: 'Bibliothèque juridique' }), el('p', { textContent: 'Sélectionnez un domaine, synchronisez vos documents OneDrive, puis posez votre question.' }));
@@ -1816,19 +1816,7 @@ export class Library extends Common {
         if (!text)
             return;
         chatInput.value = '';
-        let docs = [];
-        if (this._activeDomain === 'all') {
-            for (const [, d] of this._domainDocs)
-                docs.push(...d);
-            for (const d of this.DOMAINS) {
-                if (this._domainDocs.has(d.id))
-                    continue;
-                docs.push(...(await this.loadDomainMeta(d.id)));
-            }
-        }
-        else {
-            docs = await this.loadDomainMeta(this._activeDomain);
-        }
+        const docs = this._activeDomain === 'all' ? [] : this.getDocsMeta(this._activeDomain);
         const userMsg = {
             id: uid(), role: 'user',
             content: { type: 'text', text: text },
@@ -1908,6 +1896,7 @@ export class Library extends Common {
             const domain = await this.pickDomainModal();
             if (!domain)
                 return;
+            const folderMeta = await this.folderMeta(domain);
             for (const file of Array.from(fi.files)) {
                 if (!isSupported(file.name)) {
                     toast(`Format non supporté : ${file.name}`, 'error');
@@ -1915,12 +1904,13 @@ export class Library extends Common {
                 }
                 try {
                     const ab = await file.arrayBuffer();
-                    const meta = makeLibDocMeta(file);
-                    await this.writeLibFile(domain, file.name, ab, meta.mimeType);
-                    const existing = await this.loadDomainMeta(domain);
-                    if (!existing.some((d) => d.name === file.name)) {
-                        existing.push(meta);
-                        await this.saveDomainMeta(domain, existing);
+                    const fileMeta = makeDocMeta(file);
+                    await this.writeLibFile(domain, file.name, ab, fileMeta.mimeType);
+                    if (!folderMeta)
+                        return;
+                    if (!folderMeta.documents.some((d) => d.name === file.name)) {
+                        folderMeta.documents.push(fileMeta);
+                        await this.saveDomainMeta(domain, folderMeta);
                     }
                     toast(`"${file.name}" ajouté à ${this.domainLabel(domain)}.`, 'success');
                 }
