@@ -435,6 +435,7 @@ export class OneDriveAuth {
         body: body,
       },
       false,
+      true
     );
   }
 
@@ -448,15 +449,17 @@ export class OneDriveAuth {
     path: string,
     opts: RequestInit = {},
     rawBody = false,
+    Proxy: boolean = false,
   ): Promise<Response> {
 
-    if (!path.startsWith(this.CLAUDE_PROXY) && !this._token) await this.getAccessToken();
-    const url = path.startsWith(this.CLAUDE_PROXY) ? path : `${this.GRAPH}${path}`;
+    if (!Proxy && !this._token) await this.getAccessToken();
+    const url = Proxy ? path : `${this.GRAPH}${path}`;
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this._token}`,
       ...(opts.headers as Record<string, string> ?? {}),
     };
+    
+    if (!Proxy) headers.Authorization = `Bearer ${this._token}`;
 
     if (!rawBody && opts.body && typeof opts.body === 'string') {
       headers['Content-Type'] = 'application/json';

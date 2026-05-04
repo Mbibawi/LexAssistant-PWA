@@ -395,7 +395,7 @@ export class OneDriveAuth {
                 'anthropic-version': anthropicVersion,
             },
             body: body,
-        }, false);
+        }, false, true);
     }
     /**
      * Universal fetch for both Graph API and external URLs (GCF proxy).
@@ -403,14 +403,15 @@ export class OneDriveAuth {
      * - Otherwise it is appended to the Graph base URL.
      * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
      */
-    async gFetch(path, opts = {}, rawBody = false) {
-        if (!path.startsWith(this.CLAUDE_PROXY) && !this._token)
+    async gFetch(path, opts = {}, rawBody = false, Proxy = false) {
+        if (!Proxy && !this._token)
             await this.getAccessToken();
-        const url = path.startsWith(this.CLAUDE_PROXY) ? path : `${this.GRAPH}${path}`;
+        const url = Proxy ? path : `${this.GRAPH}${path}`;
         const headers = {
-            Authorization: `Bearer ${this._token}`,
             ...(opts.headers ?? {}),
         };
+        if (!Proxy)
+            headers.Authorization = `Bearer ${this._token}`;
         if (!rawBody && opts.body && typeof opts.body === 'string') {
             headers['Content-Type'] = 'application/json';
         }
