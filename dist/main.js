@@ -8,13 +8,12 @@
  * A single Library instance is created at boot and reused for both
  * scenarios (Library extends Cases, so it carries all state).
 */
-import { Cases, Library, OneDriveAuth } from "./modules/onedrive.js";
+import { Cases, Library } from "./modules/onedrive.js";
 import { byID, el, toggle } from './modules/ui.js';
 import { DocumentContext as OfficeAddin } from './modules/word-addin.js';
 document.addEventListener('DOMContentLoaded', boot);
 // ─── Initiale single shared instances ───────────────────────────────────────────────────
-export const oneDrive = new OneDriveAuth();
-const cases = new Cases("Affaires");
+export const cases = new Cases("Affaires");
 const library = new Library("Bibliotheque");
 const officeAddin = new OfficeAddin(cases);
 export const ids = {
@@ -212,7 +211,7 @@ function buildScenarioCard(opts) {
 }
 function buildSettingsShortcut(container) {
     const row = el("div", { className: "selector-settings-row" });
-    const userName = oneDrive.userName;
+    const userName = cases.userName;
     const odStatus = userName
         ? el("span", {
             className: "selector-od-status selector-od-status--connected",
@@ -232,12 +231,12 @@ function buildSettingsShortcut(container) {
     });
     //configBtn.onclick = () => cases.openSettingsModal();//!add a general onedrive settings modal to be opedn
     odConnect.onclick = async () => {
-        if (!oneDrive.account)
+        if (!cases.account)
             return;
         const btnOd = byID(ids.btnOneDrive);
         btnOd.textContent = "☁ Connexion en cours...";
-        await oneDrive.signIn();
-        const userName = oneDrive.userName;
+        await cases.signIn();
+        const userName = cases.userName;
         btnOd.textContent = userName ? "☁ " + userName : "☁ Connexion";
         if (userName)
             odStatus.textContent = "☁ " + userName;
@@ -273,9 +272,9 @@ async function updateTopBar(label, switchTo, action) {
     // Try silent OneDrive sign-in
     if (!odBtn)
         return;
-    if (!oneDrive.userName)
-        await oneDrive.signIn();
-    const userName = oneDrive.userName;
+    if (!cases.userName)
+        await cases.signIn();
+    const userName = cases.userName;
     odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
 }
 //# sourceMappingURL=main.js.map

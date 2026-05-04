@@ -1,4 +1,3 @@
-import { oneDrive } from '../main.js';
 // ─── MIME types Claude accepts natively ──────────────────────────────────────
 const NATIVE_MIMES = new Set([
     'application/pdf',
@@ -97,6 +96,7 @@ ${permanentInstructions()}`;
 // ─── ClaudeAPI ────────────────────────────────────────────────────────────────
 export class ClaudeAPI {
     // ─── Constants ────────────────────────────────────────────────────────────────
+    CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
     PATH = 'v1/messages';
     MODEL = 'claude-sonnet-4-6';
     // ─── Core fetch — routes through the Google Cloud Function proxy ──────────
@@ -106,7 +106,15 @@ export class ClaudeAPI {
      * and inject the anthropic-version header ourselves since gFetch won't add it.
      */
     async callProxy(messages, api = 'claude') {
-        const resp = await oneDrive.callClaudeProxy(api, this.PATH, JSON.stringify(messages), "2024-06-01");
+        const resp = await fetch(`${this.CLAUDE_PROXY}${api}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'anthropic-version': "2024-06-01",
+                'x-path': this.PATH
+            },
+            body: JSON.stringify(messages),
+        });
         if (!resp.ok) {
             const e = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
             throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);

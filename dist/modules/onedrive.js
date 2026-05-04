@@ -26,7 +26,7 @@
  */
 import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
 import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
-import { oneDrive, ids } from '../main.js';
+import { ids } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
 import { generateDocx } from './docxgen.js';
@@ -312,13 +312,6 @@ export class OneDriveAuth {
     get root() { return this.cfg.root; }
     setConfig(cfg) { this.cfg.setConfig(cfg); }
     /**
-     * getAccessToken - Get the access token for the current user.
-     * @returns {Promise<string>} The access token.
-     */
-    async getAccessToken() {
-        return this.signIn();
-    }
-    /**
      * signIn - Sign in to OneDrive.
      * @returns {Promise<void>}
      */
@@ -363,8 +356,8 @@ export class OneDriveAuth {
      * @returns {Promise<any>} The response from the OneDrive operations.
      */
     async oneDriveProxy(roote, method, payload) {
-        if (!this.account)
-            await this.getAccessToken();
+        if (!this.userName)
+            await this.signIn();
         console.log('user oid = ', this.account?.idTokenClaims.oid);
         const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
         const { body, path, mimeType } = payload;
@@ -387,32 +380,20 @@ export class OneDriveAuth {
             throw new Error(result.message || 'Proxy Error');
         return result;
     }
-    async callClaudeProxy(api, path, body, anthropicVersion) {
-        return await fetch(`${this.CLAUDE_PROXY}${api}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'anthropic-version': anthropicVersion,
-                'x-path': path
-            },
-            body: body,
-        });
-    }
     /**
      * Universal fetch for both Graph API and external URLs (GCF proxy).
      * - If url starts with 'https://' it is used verbatim (external call).
      * - Otherwise it is appended to the Graph base URL.
      * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
      */
-    async gFetch(path, opts = {}, rawBody = false, Proxy = false) {
-        if (!Proxy && !this._token)
-            await this.getAccessToken();
-        const url = Proxy ? path : `${this.GRAPH}${path}`;
+    async gFetch(path, opts = {}, rawBody = false) {
+        if (!this._token)
+            await this.signIn();
+        const url = `${this.GRAPH}${path}`;
         const headers = {
+            Authorization: `Bearer ${this._token}`,
             ...(opts.headers ?? {}),
         };
-        if (!Proxy)
-            headers.Authorization = `Bearer ${this._token}`;
         if (!rawBody && opts.body && typeof opts.body === 'string') {
             headers['Content-Type'] = 'application/json';
         }
@@ -761,7 +742,7 @@ class Common extends Folders {
     // ─── Settings modal (OneDrive only — no API key) ──────────────────────────
     openSettingsModal() {
         byID(ids.settingsOverlay)?.remove();
-        const userName = oneDrive.isSignedIn();
+        const userName = this.isSignedIn();
         const overlay = el('div', { className: 'modal-overlay', id: ids.settingsOverlay });
         const dialog = el('div', { className: 'modal-dialog modal-dialog--settings' });
         dialog.innerHTML = `
@@ -798,11 +779,11 @@ class Common extends Folders {
                 toast('Client ID requis.', 'error');
                 return;
             }
-            oneDrive.setConfig({ clientId, tenantId, rootFolder });
+            this.setConfig({ clientId, tenantId, rootFolder });
             toast('Configuration OneDrive enregistrée.', 'success');
         };
         qs('#s-od-init', dialog).onclick = async () => {
-            if (!oneDrive.isConfigured) {
+            if (!this.isConfigured) {
                 toast('Sauvegardez la configuration d\'abord.', 'error');
                 return;
             } //!might need to be change to if(!oneDrive.userOid)
@@ -816,7 +797,7 @@ class Common extends Folders {
             }
         };
         qs('#s-od-signout', dialog).onclick = async () => {
-            await oneDrive.signOut();
+            await this.signOut();
             this.updateODStatus();
             toast('Déconnecté.', 'info');
             overlay.remove();
@@ -890,7 +871,7 @@ export class Cases extends Common {
         this.setupBarsBtns();
         this.setupInputArea(userInput, sendBtn);
         if (!this.userName)
-            await oneDrive.signIn();
+            await this.signIn();
         if (!this.userName)
             return this.showNotConnected();
         this.updateODStatus();
@@ -1295,7 +1276,7 @@ export class Cases extends Common {
         this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
         this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
         this.onClick(btn(ids.settings), () => this.openSettingsModal());
-        this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
+        this.onClick(btn(ids.btnOneDrive), async () => await this.signIn());
         this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
         this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
         this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
@@ -1367,8 +1348,8 @@ export class Cases extends Common {
     }
     // ─── Modals ───────────────────────────────────────────────────────────────
     async openCaseFormModal(existing) {
-        if (!oneDrive.account)
-            await oneDrive.signIn();
+        if (!this.userName)
+            await this.signIn();
         //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
         const isEdit = !!existing;
         const overlay = el('div', { className: 'modal-overlay' });
@@ -1662,8 +1643,8 @@ export class Library extends Common {
     }
     // ─── Sync from OneDrive ───────────────────────────────────────────────────
     async syncDomainFromOneDrive(domain) {
-        if (!oneDrive.account)
-            await oneDrive.signIn();
+        if (!this.userName)
+            await this.signIn();
         let added = 0;
         const files = await this.listFiles(this.mainPath(domain));
         const meta = await this.folderMeta(domain);
