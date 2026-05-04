@@ -120,7 +120,7 @@ export class ClaudeAPI {
             const e = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
             throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
         }
-        return resp.json();
+        return await resp.text();
     }
     claudeBody(max, messages, system) {
         const body = { model: this.MODEL, max_tokens: max, messages };

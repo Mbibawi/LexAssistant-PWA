@@ -151,7 +151,7 @@ export class ClaudeAPI {
       const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
       throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
     }
-    return resp.json() as Promise<ClaudeResponse>;
+    return await resp.text() as Promise<ClaudeResponse>;
   }
 
   private claudeBody(

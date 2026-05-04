@@ -34,11 +34,15 @@ async function handleClaudeProxy(req, res) {
     const claudeUrl = `${CLAUDE_BASE_URL}${path}`;
 
     console.log('claudeUrl: ', claudeUrl)
-
+    const headers = {
+        "Content-Type": req.headers["Content-Type"],
+        "anthropic-version": req.headers['anthropic-version'],
+        "x-api-key": CLAUDE_API_KEY
+    };
     try {
         const upstream = await fetch(claudeUrl, {
             method: req.method,
-            headers: req.headers,
+            headers: headers,
             body: JSON.stringify(claudeBody)
         });
 
