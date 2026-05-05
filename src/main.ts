@@ -16,10 +16,10 @@ import { DocumentContext as OfficeAddin } from './modules/word-addin.js';
 document.addEventListener('DOMContentLoaded', boot);
 
 // ─── Initiale single shared instances ───────────────────────────────────────────────────
+export const odSingleton = new OneDriveAuth();//!This mus be initialzed before any other class
 const cases = new Cases("Affaires");
 const library = new Library("Bibliotheque");
-export const odSingleton = new OneDriveAuth()
-const officeAddin = new OfficeAddin(cases);
+const officeAddin = new OfficeAddin();
 
 export const ids = {
   btnBuildKb: "btn-build-kb",
@@ -296,7 +296,7 @@ function buildSettingsShortcut(
     const btnOd = byID(ids.btnOneDrive)!
     btnOd.textContent = "☁ Connexion en cours...";
     await odSingleton.signIn();
-    const userName = cases.userName;
+    const userName = odSingleton.userName;
     btnOd.textContent = userName ? "☁ " + userName : "☁ Connexion";
     if (userName) odStatus.textContent = "☁ " + userName;
   };

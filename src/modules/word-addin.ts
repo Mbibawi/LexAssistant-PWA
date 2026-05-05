@@ -6,7 +6,7 @@
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-import { Cases } from "./onedrive";
+import { Folders } from "./onedrive";
 
 const hosts = {
     word: 'Word' as const,
@@ -27,10 +27,7 @@ export class DocumentContext {
     // Max characters of full document body sent to Claude (token guard)
     private readonly BODY_CHAR_LIMIT = 12_000;
 
-    constructor(cases:Cases){
-        this.readJson = cases.readJson;
-        this.writeJson = cases.writeJson;
-    }
+
 
     // ── Initialisation ──────────────────────────────────────────────────────────
 

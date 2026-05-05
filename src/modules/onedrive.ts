@@ -461,7 +461,7 @@ export class OneDriveAuth {
 
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
 
-class Folders {
+export class Folders {
   private readonly SUPPORTED_EXTS: Record<string, string> = {
     pdf: 'application/pdf',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

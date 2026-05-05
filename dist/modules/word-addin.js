@@ -17,10 +17,6 @@ export class DocumentContext {
     CONTEXT_FILE = '_LexContext/OfficeShareSession.json';
     // Max characters of full document body sent to Claude (token guard)
     BODY_CHAR_LIMIT = 12_000;
-    constructor(cases) {
-        this.readJson = cases.readJson;
-        this.writeJson = cases.writeJson;
-    }
     // ── Initialisation ──────────────────────────────────────────────────────────
     /**
      * Call once at app startup, before any other method.

@@ -414,7 +414,7 @@ export class OneDriveAuth {
     }
 }
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
-class Folders {
+export class Folders {
     SUPPORTED_EXTS = {
         pdf: 'application/pdf',
         docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
