@@ -19,8 +19,8 @@ type WorkMode = 'analyse' | 'redaction' | 'modification' | 'note';
 type ChatRole = 'user' | 'assistant';
 
 type LibDomain =
-  | 'commercial' | 'fiscal' | 'social' | 'civil'
-  | 'penal' | 'immobilier' | 'international' | 'autre';
+  | 'commercial' | 'fiscal' | 'social' | 'civil' | "sociétés"
+  | 'penal' | 'immobilier' | 'international' | 'autre' | 'all';
 
   // ─── MSAL types ───────────────────────────────────────────────────────────────
   
@@ -75,7 +75,7 @@ type CaseCallOpts = {
 };
 
 type LibCallOpts = {
-  domain: LibDomain | "all";
+  domain: LibDomain;
   docs: LibDocumentMeta[];
   skills: { name: string; content: string }[];
   userMessage: string;
@@ -123,7 +123,7 @@ type ClaudeMessage = {
   timestamp?: number;
   mode?: WorkMode;
   generatedDocName?: string;
-  domain?: LibDomain | 'all';
+  domain?: string;
 };
 
 
@@ -131,9 +131,9 @@ type ClaudeMessage = {
 // ─── In-memory case object (assembled from CaseMeta + folder listing) ─────────
 
 type FolderMeta = {
-  folderName: string;          // primary key — the OneDrive folder name
-  name: string;                     // Display name
-  domain?: string | null;                 // legal domain of the case
+  folderName: string;         // primary key — the OneDrive folder name
+  name: string;                // Display name
+  domain?: LibDomain | string; // legal domain of the case
   status: 'active' | 'closed' | 'suspended';
   createdAt: number;           // creation timestamp
   updatedAt: number;           // last modification timestamp
@@ -175,9 +175,47 @@ type ClaudeConversation = {
 };
 
 type ClaudeResponse = {
+  id: string;
+  model: string;
+  stop_details: string;
+  stop_sequence: string;
+  type: string;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    service_tier: string;
+    cache_create_input_tokens: number;
+    cache_read_input_tokens: number;
+    inference_geo: string;
+    total_cost: number;
+  }
+  role: 'assistant';
   content: ChatBlock[];
   stop_reason: string;
 };
+
+
+type _ss = {
+  id: string;
+  type: "message";
+  role: "assistant";
+  model: string;
+  content: [
+    {
+      type: "text" | "tool_use" | "tool_result" | "image" | "document",
+      text: string;
+    }
+  ];
+  stop_reason: "end_turn" | "max_tokens" | "stop_sequence" | "tool_use";
+  stop_sequence: string | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_write_input_tokens: number;
+  }
+}
+
 
 type ContentPart =
   | ChatBlock

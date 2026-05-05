@@ -30,7 +30,7 @@ import {
   formatDate, formatDateTime, qs, qsa, setActive,
 } from './ui.js';
 import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
-import { ids } from '../main.js';
+import { ids, oneDrive } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
 import { generateDocx } from './docxgen.js';
@@ -389,7 +389,7 @@ export class OneDriveAuth {
    */
   async oneDriveProxy(roote: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
     if (!this.userName) await this.signIn();
-    console.log('user oid = ', this.account?.idTokenClaims.oid)
+    console.log('user oid = ', oneDrive._userOid)
     const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
 
     const { body, path, mimeType } = payload;
@@ -397,7 +397,7 @@ export class OneDriveAuth {
     const headers: HeadersInit = {
       'x-path': path || '',
       'x-mime-type': mimeType || 'application/octet-stream',
-      'x-user': this.account?.idTokenClaims.oid || '',
+      'x-user': this._userOid || '',
       'x-token': this._token || '',
     };
 
@@ -428,7 +428,7 @@ export class OneDriveAuth {
     rawBody = false,
   ): Promise<Response> {
 
-    if (!this._token) await this.signIn();
+    if (!oneDrive._token) await oneDrive.signIn();
     const url = `${this.GRAPH}${path}`;
 
     const headers: Record<string, string> = {
@@ -693,6 +693,8 @@ abstract class Common extends Folders {
   protected _kb: string | null = null;  // cached knowledge base content
   protected _notes: PermanentNote[] = [];
   protected _foldersMeta: FolderMeta[] = [];
+  protected _conversation: ClaudeMessage[] = [];
+  protected _messages: ClaudeMessage[] = [];
 
 
   // ─── Abstract Methods ───────────────────────────────────────────────────────────────
@@ -724,7 +726,25 @@ abstract class Common extends Folders {
     const messages = await this.readJson<{ messages: T[] }>(this.convPath(path));
     return messages?.messages ?? [];
   }
-  protected writeConversation(f: string, m: ClaudeMessage[]) { return this.writeJson(this.convPath(f), { messages: m } satisfies ConversationFile); }
+  protected async writeConversation(f: string, m: ClaudeMessage[]) {
+    if (!f) return Promise.resolve();
+    return await this.writeJson(this.convPath(f), { messages: m } satisfies ConversationFile);
+  }
+
+  protected async processResponse(response: string[], folder: FolderMeta, messages: ClaudeMessage[], mode?: WorkMode, docName?: string) {
+    const asst: ClaudeMessage = {
+      id: uid(),
+      role: 'assistant',
+      content: { type: 'text', text: response.join('\n') },
+      timestamp: Date.now(),
+      domain: folder.domain as LibDomain,
+      mode: mode,
+      generatedDocName: docName
+    };
+    messages.push(asst);
+    this.appendMsg(this.buildMsgEl(asst));
+    await this.writeConversation(folder!.folderName, messages);
+  }
 
   protected renderChat(messages: ClaudeMessage[], chatBody: HTMLElement): void {
     if (!messages.length) return;
@@ -767,8 +787,8 @@ abstract class Common extends Folders {
   updateODStatus(): void {
     const statusEl = byID(ids.oneDriveStatus);
     if (!statusEl) return;
-    if (this.userName) {
-      statusEl.textContent = `☁ ${this.userName}`;
+    if (oneDrive.userName) {
+      statusEl.textContent = `☁ ${oneDrive.userName}`;
       statusEl.className = 'od-status od-status--connected';
     } else {
       statusEl.textContent = '☁ Non connecté';
@@ -931,7 +951,6 @@ export class Cases extends Common {
   private _saving = false;
   private _docFilter: DocKind | null = null;
   private _activeCase: FolderMeta | null = null;
-  private _messages: ClaudeMessage[] = [];
 
   protected readonly _chatBody = el('div', { className: 'msg msg--assistant' },
     el('div', { className: 'msg_label', textContent: 'Lex Assistant' }),
@@ -954,8 +973,8 @@ export class Cases extends Common {
     // Wire all scenario-specific UI
     this.setupBarsBtns();
     this.setupInputArea(userInput, sendBtn);
-    if (!this.userName) await this.signIn();
-    if (!this.userName) return this.showNotConnected();
+    if (!oneDrive.userName) await oneDrive.signIn();
+    if (!oneDrive.userName) return this.showNotConnected();
     this.updateODStatus();
     await this.loadAllSubFolders();//!this must come before renderChat(), because it sets this._activeCase
     await this.fetchSkills();
@@ -1098,9 +1117,7 @@ export class Cases extends Common {
   private saveNotes() { return this._activeCase ? this.writeNotes(this._activeCase.folderName, this._notes) : Promise.resolve(); }
 
 
-  private saveConversation() {
-    return this._activeCase ? this.writeConversation(this._activeCase.folderName, this._messages) : Promise.resolve();
-  }
+
 
   // ─── Load all cases ───────────────────────────────────────────────────────
 
@@ -1114,7 +1131,7 @@ export class Cases extends Common {
         this._foldersMeta.push(meta);
     }));
     if (!this._foldersMeta.length) return;
-    this._foldersMeta.sort((a, b) => b.updatedAt - a.updatedAt);
+    this._foldersMeta.sort((a, b) => b!.updatedAt - a!.updatedAt);
     const folderMeta = this.folderMeta;
     const caseMeta = await findCaseMeta(this._foldersMeta);
     if (!caseMeta) return alert('We could not find a case with the folder name  you provided');
@@ -1123,7 +1140,7 @@ export class Cases extends Common {
 
     async function findCaseMeta(metas: FolderMeta[]) {
       const folderName = prompt("Enter the folder name of the case you want to select") || '';
-      return metas.find(meta => meta.folderName === folderName) ?? await folderMeta(folderName) ?? null;
+      return metas.find(meta => meta?.folderName === folderName) ?? await folderMeta(folderName) ?? null;
     }
   }
 
@@ -1386,20 +1403,10 @@ export class Cases extends Common {
       typing.remove();
       let docName: string | undefined;
       if (this.activeMode === 'redaction') {
-        const first = response.split('\n')[0].replace(/^#+\s*/, '').trim();
+        const first = response[0].split('\n')[0].replace(/^#+\s*/, '').trim();
         docName = first.length > 0 && first.length < 100 ? first : 'Document rédigé';
       }
-      const asst: ClaudeMessage = {
-        id: uid(),
-        role: 'assistant',
-        content: { type: 'text', text: response },
-        timestamp: Date.now(),
-        mode: this.activeMode,
-        generatedDocName: docName
-      };
-      this._messages.push(asst);
-      this.appendMsg(this.buildMsgEl(asst));
-      await this.saveConversation();
+      await this.processResponse(response, this._activeCase, this._messages, this.activeMode, docName);
     } catch (err) {
       typing.remove();
       toast((err as Error).message, 'error', 6000);
@@ -1418,7 +1425,7 @@ export class Cases extends Common {
     this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
     this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
     this.onClick(btn(ids.settings), () => this.openSettingsModal());
-    this.onClick(btn(ids.btnOneDrive), async () => await this.signIn());
+    this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
     this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
     this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
     this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
@@ -1490,7 +1497,7 @@ export class Cases extends Common {
   // ─── Modals ───────────────────────────────────────────────────────────────
 
   private async openCaseFormModal(existing: FolderMeta | null): Promise<void> {
-    if (!this.userName) await this.signIn();
+    if (!oneDrive.userName) await oneDrive.signIn();
     //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
     const isEdit = !!existing;
     const overlay = el('div', { className: 'modal-overlay' });
@@ -1566,6 +1573,7 @@ export class Cases extends Common {
   }
 
   private openCaseContextMenu(c: FolderMeta, x: number, y: number): void {
+    if (!c) return;
     byID(ids.contextMenu)?.remove();
     const menu = el('div', { className: 'context-menu', id: ids.contextMenu });
     menu.style.left = `${x}px`;
@@ -1683,9 +1691,8 @@ export class Cases extends Common {
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
 
 export class Library extends Common {
-  private _activeDomain: LibDomain | 'all' = 'all';
+  private _activeDomain: FolderMeta = undefined!;
   private _domainDocs = new Map<string, DocumentMeta[]>();
-  private _messages: ClaudeMessage[] = [];
 
   readonly DOMAINS: Array<{ id: LibDomain; label: string; icon: string }> = [
     { id: 'commercial', label: 'Commercial', icon: '🏢' },
@@ -1698,28 +1705,25 @@ export class Library extends Common {
     { id: 'autre', label: 'Autre', icon: '📚' },
   ];
 
+  private get _domain() { return this._activeDomain?.domain ?? "all" };
   // ─── Path helpers ─────────────────────────────────────────────────────────
 
   protected mainPath(domain: string): string {
     return `${this.root}/${this.mainFolder}/${this.domainLabel(domain)}`;
   }
 
-  private _convPath = () => {
-    return this._activeDomain === 'all'
-      ? `${this.root}/${this.mainFolder}/_conversation.json`
-      : this.convPath(this._activeDomain);
-  }
+
   // ─── Boot ─────────────────────────────────────────────────────────────────
 
   async showUI(): Promise<void> {
     const content = byID(ids.content)!;
     const { userInput, sendBtn } = this.buildUI(content);
-    if (!this.userName) return this.showNotConnected();
+    if (!oneDrive.userName) return this.showNotConnected();
 
     this.updateODStatus();
     this.setupInputArea(userInput, sendBtn);
     this.renderDomainPills();
-    this._messages = await this.readConversation<ClaudeMessage>(this._activeDomain).catch(() => []);
+    this._messages = await this.readConversation<ClaudeMessage>(this._domain).catch(() => []);
       this.renderChat(this._messages, this._chatBody);
       this.renderDocList();
       this.setupFileUpload();
@@ -1786,9 +1790,7 @@ export class Library extends Common {
 
   // ─── OneDrive CRUD ────────────────────────────────────────────────────────
 
-  private writeLibConversation(messages: ClaudeMessage[]): Promise<void> {
-    return this.writeJson(this._convPath(), { messages });
-  }
+
 
   async readLibFile(domain: string, fileName: string): Promise<ArrayBuffer> {
     return this.readFilePath(`${this.mainPath(domain)}/${fileName}`);
@@ -1800,7 +1802,7 @@ export class Library extends Common {
 
   // ─── Domain meta ──────────────────────────────────────────────────────────
 
-  async saveDomainMeta(domain: LibDomain, meta: FolderMeta | null): Promise<void> {
+  async saveDomainMeta(domain: string, meta: FolderMeta | null): Promise<void> {
     if (!meta) return;
     this._domainDocs.set(domain, meta.documents);
     await this.writeMeta(domain, meta);
@@ -1817,8 +1819,8 @@ export class Library extends Common {
 
   // ─── Sync from OneDrive ───────────────────────────────────────────────────
 
-  async syncDomainFromOneDrive(domain: LibDomain): Promise<number> {
-    if (!this.userName) await this.signIn();
+  async syncDomainFromOneDrive(domain: string): Promise<number> {
+    if (!oneDrive.userName) await oneDrive.signIn();
     let added = 0;
     const files = await this.listFiles(this.mainPath(domain));
     const meta = await this.folderMeta(domain);
@@ -1839,10 +1841,10 @@ export class Library extends Common {
     if (btn) { btn.disabled = true; btn.textContent = '⟳ Sync…'; }
     try {
       let total = 0;
-      if (this._activeDomain === 'all') {
+      if (this._domain === 'all') {
         for (const d of this.DOMAINS) total += await this.syncDomainFromOneDrive(d.id);
       } else {
-        total = await this.syncDomainFromOneDrive(this._activeDomain);
+        total = await this.syncDomainFromOneDrive(this._domain);
       }
       this.renderDocList();
       this.renderDomainPills();
@@ -1854,21 +1856,21 @@ export class Library extends Common {
   // ─── Knowledge base ───────────────────────────────────────────────────────
 
   async buildKnowledgeBase(appendMode: Boolean = false): Promise<void> {
-    if (this._activeDomain === 'all') { toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info'); return; }
+    if (this._domain === 'all') { toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info'); return; }
     const btn = byID(ids.btnBuildKb) as HTMLButtonElement | null;
     if (btn) { btn.disabled = true; btn.textContent = '🧠 Génération…'; }
     try {
-      const docs = this._domainDocs.get(this._activeDomain) ?? [];
+      const docs = this._domainDocs.get(this._domain) ?? [];
       const markdown = await this.claude.buildLibKnowledgeBase(
-        this._activeDomain,
+        this._domain,
         docs,
-        (name) => this.readLibFile(this._activeDomain as LibDomain, name),
+        (name) => this.readLibFile(this._domain as LibDomain, name),
         [],
         appendMode,
       );
       // Save versioned markdown to OneDrive
-      const filename = `_kb_${this._activeDomain}_${this.claude.kbTimestamp}.md`;
-      const filePath = `${this.mainPath(this._activeDomain)}/${filename}`;
+      const filename = `_kb_${this._domain}_${this.claude.kbTimestamp}.md`;
+      const filePath = `${this.mainPath(this._domain)}/${filename}`;
       await this.writeFilePath(filePath, markdown, 'text/markdown');
       this._kb = markdown;
       toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
@@ -1882,12 +1884,12 @@ export class Library extends Common {
     const container = byID(ids.libDomainPills) as HTMLElement;
     if (!container) return;
     container.innerHTML = '';
-    const all = el('button', { className: `lib-pill${this._activeDomain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
+    const all = el('button', { className: `lib-pill${this._domain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
     all.onclick = () => this.switchDomain('all');
     container.appendChild(all);
     for (const d of this.DOMAINS) {
       const docs = this._domainDocs.get(d.id) ?? [];
-      const pill = el('button', { className: `lib-pill${this._activeDomain === d.id ? ' active' : ''}` });
+      const pill = el('button', { className: `lib-pill${this._domain === d.id ? ' active' : ''}` });
       pill.textContent = `${d.icon} ${d.label}`;
       if (docs.length) pill.appendChild(el('span', { className: 'lib-pill_count', textContent: String(docs.length) }));
       pill.onclick = () => this.switchDomain(d.id);
@@ -1896,7 +1898,7 @@ export class Library extends Common {
   }
 
   async switchDomain(domain: LibDomain | 'all'): Promise<void> {
-    this._activeDomain = domain;
+    this._activeDomain.domain = domain;
     this._kb = null;
     if (domain !== 'all') {
       await this.folderMeta(domain);
@@ -1918,7 +1920,7 @@ export class Library extends Common {
   }
 
   // ─── Render: lib doc list ─────────────────────────────────────────────────
-  private getDocsMeta(domain: LibDomain | 'all'): DocumentMeta[] {
+  private getDocsMeta(domain: LibDomain): DocumentMeta[] {
     if (domain === 'all')
       return this.DOMAINS.map(d => this._domainDocs.get(d.id)).flat().filter(docs => docs !== undefined);
     return this._domainDocs.get(domain) ?? [];
@@ -1927,7 +1929,7 @@ export class Library extends Common {
     const list = byID(ids.libDocList);
     if (!list) return;
     list.innerHTML = '';
-    let docs: DocumentMeta[] = this.getDocsMeta(this._activeDomain);
+    let docs: DocumentMeta[] = this.getDocsMeta(this._activeDomain.domain as LibDomain);
     docs = docs.sort((a, b) => b.addedAt - a.addedAt);
     if (!docs.length) { list.appendChild(el('div', { className: 'lib-doc-empty', textContent: 'Aucun document. Ajoutez ou synchronisez.' })); return; }
     for (const doc of docs) {
@@ -1989,8 +1991,11 @@ export class Library extends Common {
 
   private async clearLibConv(): Promise<void> {
     if (!await confirm('Effacer l\'historique de la bibliothèque pour ce domaine ?')) return;
+    const path = this._domain === 'all'
+      ? `${this.root}/${this.mainFolder}/_conversation`
+      : this.convPath(this._domain);
     this._messages = [];
-    await this.writeLibConversation([]);
+    await this.writeJson(path, this._messages);//!this must be writeJson not writeConversation
     this.renderChat(this._messages, this._chatBody);
     toast('Conversation effacée.', 'info');
   }
@@ -2002,13 +2007,13 @@ export class Library extends Common {
     const text = chatInput.value.trim();
     if (!text) return;
     chatInput.value = '';
-    const docs: DocumentMeta[] = this._activeDomain === 'all' ? [] : this.getDocsMeta(this._activeDomain);
+    const docs: DocumentMeta[] = this._activeDomain.domain === 'all' ? [] : this.getDocsMeta(this._activeDomain.domain as LibDomain);
 
     const userMsg: ClaudeMessage = {
       id: uid(), role: 'user',
       content: { type: 'text', text: text },
       timestamp: Date.now(),
-      domain: this._activeDomain
+      domain: this._activeDomain.domain!
     };
     this._messages.push(userMsg);
     this.appendMsg(this.buildMsgEl(userMsg));
@@ -2020,8 +2025,8 @@ export class Library extends Common {
 
     try {
       const response = await this.claude.callClaudeLib(
-        this._activeDomain, {
-        domain: this._activeDomain,
+        {
+          domain: this._activeDomain.domain as LibDomain,
         docs,
           skills: this._skills,
         userMessage: text,
@@ -2030,16 +2035,7 @@ export class Library extends Common {
         readFile: this.readLibFile,
       });
       typing.remove();
-      const asstMsg: ClaudeMessage = {
-        id: uid(),
-        role: 'assistant',
-        content: { type: 'text', text: response },
-        timestamp: Date.now(),
-        domain: this._activeDomain
-      };
-      this._messages.push(asstMsg);
-      this.appendMsg(this.buildMsgEl(asstMsg));
-      await this.writeLibConversation(this._messages);
+      await this.processResponse(response, this._activeDomain, this._messages);
     } catch (err) {
       typing.remove();
       toast((err as Error).message, 'error', 6000);
@@ -2065,7 +2061,7 @@ export class Library extends Common {
       international: ['Conditions d\'applicabilité des conventions fiscales bilatérales.', 'Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).', 'Règles de conflit de lois en matière successorale (Règl. UE 650/2012).'],
       all: ['Quels sont les documents disponibles dans la bibliothèque ?', 'Synthèse des principales règles jurisprudentielles sur la responsabilité civile.', 'Analyse comparative des régimes de responsabilité civile et pénale du dirigeant.'],
     };
-    const list = prompts[this._activeDomain] ?? prompts.all;
+    const list = prompts[this._activeDomain?.domain ?? 'all'];
     for (const p of list) {
       const btn = el('button', { className: 'quick-btn', textContent: p });
       btn.onclick = () => { { ta.value = p; ta.focus(); } };

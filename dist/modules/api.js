@@ -1,11 +1,3 @@
-// ─── MIME types Claude accepts natively ──────────────────────────────────────
-const NATIVE_MIMES = new Set([
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'text/plain', 'text/html', 'text/markdown',
-]);
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 /** Convert any string to base64 (UTF-8 safe) */
 function strToBase64(text) {
@@ -120,7 +112,8 @@ export class ClaudeAPI {
             const e = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
             throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
         }
-        return await resp.text();
+        const json = JSON.parse(await resp.text());
+        return json.content.map(c => c.text);
     }
     claudeBody(max, messages, system) {
         const body = { model: this.MODEL, max_tokens: max, messages };
@@ -133,36 +126,40 @@ export class ClaudeAPI {
     }
     // ─── Doc parts builder ────────────────────────────────────────────────────
     async buildDocParts(folderName, docs, readFile) {
+        const NATIVE_MIMES = new Set([
+            'application/pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'text/plain', 'text/html', 'text/markdown',
+        ]);
         const parts = [];
         for (const doc of docs) {
+            if (!NATIVE_MIMES.has(doc.mimeType))
+                continue;
             try {
                 const buf = await readFile(folderName, doc.name);
-                parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
+                const part = parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
             }
             catch {
-                parts.push({
+                const message = `[Fichier "${doc.name}" inaccessible sur OneDrive]`;
+                console.log(message);
+                const part = {
                     type: 'text',
                     text: `[Fichier "${doc.name}" inaccessible sur OneDrive]`
-                });
+                };
             }
         }
         return parts;
         function docPart(name, mime, base64) {
-            if (NATIVE_MIMES.has(mime)) {
-                return {
-                    type: 'document',
-                    source: {
-                        type: 'base64',
-                        media_type: mime,
-                        data: base64
-                    },
-                    title: name
-                };
-            }
-            ;
             return {
-                type: 'text',
-                text: `[Fichier joint : ${name} — format non lu nativement]`
+                type: 'document',
+                source: {
+                    type: 'base64',
+                    media_type: mime,
+                    data: base64
+                },
+                title: name
             };
         }
     }
@@ -236,7 +233,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 role: 'user',
                 content: [...docParts, { type: 'text', text: prompt }],
             }]));
-        return data;
+        return data.join('\n');
         //return this.extractText(data);
     }
     // ─── Case conversation ────────────────────────────────────────────────────
@@ -264,7 +261,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         //return this.extractText(data);
     }
     // ─── Library conversation ─────────────────────────────────────────────────
-    async callClaudeLib(folderName, opts) {
+    async callClaudeLib(opts) {
         const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
         const system = buildLibSystem(domain, skills);
         let firstUserContent;
@@ -282,7 +279,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
             ];
         }
         else {
-            firstUserContent = await this.buildDocParts(folderName, docs, readFile);
+            firstUserContent = await this.buildDocParts(domain, docs, readFile);
         }
         // Rebuild history: inject docs only in the first user turn
         const messages = history.length
@@ -316,7 +313,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
                 content: [...contextParts, { type: 'text', text: prompt }]
             }
         ], system));
-        return data;
+        return data.join('\n');
         //return this.extractText(data);
     }
     toBase64(buffer) {

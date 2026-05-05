@@ -26,7 +26,7 @@
  */
 import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
 import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
-import { ids } from '../main.js';
+import { ids, oneDrive } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
 import { generateDocx } from './docxgen.js';
@@ -358,13 +358,13 @@ export class OneDriveAuth {
     async oneDriveProxy(roote, method, payload) {
         if (!this.userName)
             await this.signIn();
-        console.log('user oid = ', this.account?.idTokenClaims.oid);
+        console.log('user oid = ', oneDrive._userOid);
         const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
         const { body, path, mimeType } = payload;
         const headers = {
             'x-path': path || '',
             'x-mime-type': mimeType || 'application/octet-stream',
-            'x-user': this.account?.idTokenClaims.oid || '',
+            'x-user': this._userOid || '',
             'x-token': this._token || '',
         };
         const response = await fetch(url, {
@@ -387,8 +387,8 @@ export class OneDriveAuth {
      * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
      */
     async gFetch(path, opts = {}, rawBody = false) {
-        if (!this._token)
-            await this.signIn();
+        if (!oneDrive._token)
+            await oneDrive.signIn();
         const url = `${this.GRAPH}${path}`;
         const headers = {
             Authorization: `Bearer ${this._token}`,
@@ -638,6 +638,8 @@ class Common extends Folders {
     _kb = null; // cached knowledge base content
     _notes = [];
     _foldersMeta = [];
+    _conversation = [];
+    _messages = [];
     folderMeta = async (folderName) => await this.readMeta(folderName);
     metaPath = (f) => `${this.mainPath(f)}/_meta.json`;
     notesPath = (f) => `${this.mainPath(f)}/_notes.json`;
@@ -653,7 +655,25 @@ class Common extends Folders {
         const messages = await this.readJson(this.convPath(path));
         return messages?.messages ?? [];
     }
-    writeConversation(f, m) { return this.writeJson(this.convPath(f), { messages: m }); }
+    async writeConversation(f, m) {
+        if (!f)
+            return Promise.resolve();
+        return await this.writeJson(this.convPath(f), { messages: m });
+    }
+    async processResponse(response, folder, messages, mode, docName) {
+        const asst = {
+            id: uid(),
+            role: 'assistant',
+            content: { type: 'text', text: response.join('\n') },
+            timestamp: Date.now(),
+            domain: folder.domain,
+            mode: mode,
+            generatedDocName: docName
+        };
+        messages.push(asst);
+        this.appendMsg(this.buildMsgEl(asst));
+        await this.writeConversation(folder.folderName, messages);
+    }
     renderChat(messages, chatBody) {
         if (!messages.length)
             return;
@@ -699,8 +719,8 @@ class Common extends Folders {
         const statusEl = byID(ids.oneDriveStatus);
         if (!statusEl)
             return;
-        if (this.userName) {
-            statusEl.textContent = `☁ ${this.userName}`;
+        if (oneDrive.userName) {
+            statusEl.textContent = `☁ ${oneDrive.userName}`;
             statusEl.className = 'od-status od-status--connected';
         }
         else {
@@ -857,7 +877,6 @@ export class Cases extends Common {
     _saving = false;
     _docFilter = null;
     _activeCase = null;
-    _messages = [];
     _chatBody = el('div', { className: 'msg msg--assistant' }, el('div', { className: 'msg_label', textContent: 'Lex Assistant' }), el('div', { className: 'msg_bubble' }, el('p', {
         innerHTML: `Dossier <strong>${this._activeCase?.name}</strong>. ${this._activeCase?.documents.length} pièce(s), ${this._notes.length} note(s)${this._skills.length ? `, ${this._skills.length} skill(s)` : ''}${this._kb ? ' · <em>Base de connaissance chargée</em>' : ''}.`
     }), el('p', { textContent: 'Que souhaitez-vous faire ?' })));
@@ -870,9 +889,9 @@ export class Cases extends Common {
         // Wire all scenario-specific UI
         this.setupBarsBtns();
         this.setupInputArea(userInput, sendBtn);
-        if (!this.userName)
-            await this.signIn();
-        if (!this.userName)
+        if (!oneDrive.userName)
+            await oneDrive.signIn();
+        if (!oneDrive.userName)
             return this.showNotConnected();
         this.updateODStatus();
         await this.loadAllSubFolders(); //!this must come before renderChat(), because it sets this._activeCase
@@ -969,9 +988,6 @@ export class Cases extends Common {
         }
     }
     saveNotes() { return this._activeCase ? this.writeNotes(this._activeCase.folderName, this._notes) : Promise.resolve(); }
-    saveConversation() {
-        return this._activeCase ? this.writeConversation(this._activeCase.folderName, this._messages) : Promise.resolve();
-    }
     // ─── Load all cases ───────────────────────────────────────────────────────
     async loadAllSubFolders() {
         const subFolders = await this.listSubFolders(this.mainFolder);
@@ -993,7 +1009,7 @@ export class Cases extends Common {
         this.renderCaseList();
         async function findCaseMeta(metas) {
             const folderName = prompt("Enter the folder name of the case you want to select") || '';
-            return metas.find(meta => meta.folderName === folderName) ?? await folderMeta(folderName) ?? null;
+            return metas.find(meta => meta?.folderName === folderName) ?? await folderMeta(folderName) ?? null;
         }
     }
     // ─── Select case ──────────────────────────────────────────────────────────
@@ -1243,20 +1259,10 @@ export class Cases extends Common {
             typing.remove();
             let docName;
             if (this.activeMode === 'redaction') {
-                const first = response.split('\n')[0].replace(/^#+\s*/, '').trim();
+                const first = response[0].split('\n')[0].replace(/^#+\s*/, '').trim();
                 docName = first.length > 0 && first.length < 100 ? first : 'Document rédigé';
             }
-            const asst = {
-                id: uid(),
-                role: 'assistant',
-                content: { type: 'text', text: response },
-                timestamp: Date.now(),
-                mode: this.activeMode,
-                generatedDocName: docName
-            };
-            this._messages.push(asst);
-            this.appendMsg(this.buildMsgEl(asst));
-            await this.saveConversation();
+            await this.processResponse(response, this._activeCase, this._messages, this.activeMode, docName);
         }
         catch (err) {
             typing.remove();
@@ -1276,7 +1282,7 @@ export class Cases extends Common {
         this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
         this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
         this.onClick(btn(ids.settings), () => this.openSettingsModal());
-        this.onClick(btn(ids.btnOneDrive), async () => await this.signIn());
+        this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
         this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
         this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
         this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
@@ -1348,8 +1354,8 @@ export class Cases extends Common {
     }
     // ─── Modals ───────────────────────────────────────────────────────────────
     async openCaseFormModal(existing) {
-        if (!this.userName)
-            await this.signIn();
+        if (!oneDrive.userName)
+            await oneDrive.signIn();
         //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
         const isEdit = !!existing;
         const overlay = el('div', { className: 'modal-overlay' });
@@ -1418,6 +1424,8 @@ export class Cases extends Common {
         nameInput.focus();
     }
     openCaseContextMenu(c, x, y) {
+        if (!c)
+            return;
         byID(ids.contextMenu)?.remove();
         const menu = el('div', { className: 'context-menu', id: ids.contextMenu });
         menu.style.left = `${x}px`;
@@ -1533,9 +1541,8 @@ export class Cases extends Common {
 }
 // ─── Library — bibliothèque scenario ─────────────────────────────────────────
 export class Library extends Common {
-    _activeDomain = 'all';
+    _activeDomain = undefined;
     _domainDocs = new Map();
-    _messages = [];
     DOMAINS = [
         { id: 'commercial', label: 'Commercial', icon: '🏢' },
         { id: 'fiscal', label: 'Fiscal', icon: '💰' },
@@ -1546,25 +1553,22 @@ export class Library extends Common {
         { id: 'international', label: 'International', icon: '🌐' },
         { id: 'autre', label: 'Autre', icon: '📚' },
     ];
+    get _domain() { return this._activeDomain?.domain ?? "all"; }
+    ;
     // ─── Path helpers ─────────────────────────────────────────────────────────
     mainPath(domain) {
         return `${this.root}/${this.mainFolder}/${this.domainLabel(domain)}`;
     }
-    _convPath = () => {
-        return this._activeDomain === 'all'
-            ? `${this.root}/${this.mainFolder}/_conversation.json`
-            : this.convPath(this._activeDomain);
-    };
     // ─── Boot ─────────────────────────────────────────────────────────────────
     async showUI() {
         const content = byID(ids.content);
         const { userInput, sendBtn } = this.buildUI(content);
-        if (!this.userName)
+        if (!oneDrive.userName)
             return this.showNotConnected();
         this.updateODStatus();
         this.setupInputArea(userInput, sendBtn);
         this.renderDomainPills();
-        this._messages = await this.readConversation(this._activeDomain).catch(() => []);
+        this._messages = await this.readConversation(this._domain).catch(() => []);
         this.renderChat(this._messages, this._chatBody);
         this.renderDocList();
         this.setupFileUpload();
@@ -1617,9 +1621,6 @@ export class Library extends Common {
         return this.DOMAINS.find((d) => d.id === id)?.label ?? id;
     }
     // ─── OneDrive CRUD ────────────────────────────────────────────────────────
-    writeLibConversation(messages) {
-        return this.writeJson(this._convPath(), { messages });
-    }
     async readLibFile(domain, fileName) {
         return this.readFilePath(`${this.mainPath(domain)}/${fileName}`);
     }
@@ -1643,8 +1644,8 @@ export class Library extends Common {
     }
     // ─── Sync from OneDrive ───────────────────────────────────────────────────
     async syncDomainFromOneDrive(domain) {
-        if (!this.userName)
-            await this.signIn();
+        if (!oneDrive.userName)
+            await oneDrive.signIn();
         let added = 0;
         const files = await this.listFiles(this.mainPath(domain));
         const meta = await this.folderMeta(domain);
@@ -1669,12 +1670,12 @@ export class Library extends Common {
         }
         try {
             let total = 0;
-            if (this._activeDomain === 'all') {
+            if (this._domain === 'all') {
                 for (const d of this.DOMAINS)
                     total += await this.syncDomainFromOneDrive(d.id);
             }
             else {
-                total = await this.syncDomainFromOneDrive(this._activeDomain);
+                total = await this.syncDomainFromOneDrive(this._domain);
             }
             this.renderDocList();
             this.renderDomainPills();
@@ -1692,7 +1693,7 @@ export class Library extends Common {
     }
     // ─── Knowledge base ───────────────────────────────────────────────────────
     async buildKnowledgeBase(appendMode = false) {
-        if (this._activeDomain === 'all') {
+        if (this._domain === 'all') {
             toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info');
             return;
         }
@@ -1702,11 +1703,11 @@ export class Library extends Common {
             btn.textContent = '🧠 Génération…';
         }
         try {
-            const docs = this._domainDocs.get(this._activeDomain) ?? [];
-            const markdown = await this.claude.buildLibKnowledgeBase(this._activeDomain, docs, (name) => this.readLibFile(this._activeDomain, name), [], appendMode);
+            const docs = this._domainDocs.get(this._domain) ?? [];
+            const markdown = await this.claude.buildLibKnowledgeBase(this._domain, docs, (name) => this.readLibFile(this._domain, name), [], appendMode);
             // Save versioned markdown to OneDrive
-            const filename = `_kb_${this._activeDomain}_${this.claude.kbTimestamp}.md`;
-            const filePath = `${this.mainPath(this._activeDomain)}/${filename}`;
+            const filename = `_kb_${this._domain}_${this.claude.kbTimestamp}.md`;
+            const filePath = `${this.mainPath(this._domain)}/${filename}`;
             await this.writeFilePath(filePath, markdown, 'text/markdown');
             this._kb = markdown;
             toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
@@ -1727,12 +1728,12 @@ export class Library extends Common {
         if (!container)
             return;
         container.innerHTML = '';
-        const all = el('button', { className: `lib-pill${this._activeDomain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
+        const all = el('button', { className: `lib-pill${this._domain === 'all' ? ' active' : ''}`, textContent: 'Tous' });
         all.onclick = () => this.switchDomain('all');
         container.appendChild(all);
         for (const d of this.DOMAINS) {
             const docs = this._domainDocs.get(d.id) ?? [];
-            const pill = el('button', { className: `lib-pill${this._activeDomain === d.id ? ' active' : ''}` });
+            const pill = el('button', { className: `lib-pill${this._domain === d.id ? ' active' : ''}` });
             pill.textContent = `${d.icon} ${d.label}`;
             if (docs.length)
                 pill.appendChild(el('span', { className: 'lib-pill_count', textContent: String(docs.length) }));
@@ -1741,7 +1742,7 @@ export class Library extends Common {
         }
     }
     async switchDomain(domain) {
-        this._activeDomain = domain;
+        this._activeDomain.domain = domain;
         this._kb = null;
         if (domain !== 'all') {
             await this.folderMeta(domain);
@@ -1769,7 +1770,7 @@ export class Library extends Common {
         if (!list)
             return;
         list.innerHTML = '';
-        let docs = this.getDocsMeta(this._activeDomain);
+        let docs = this.getDocsMeta(this._activeDomain.domain);
         docs = docs.sort((a, b) => b.addedAt - a.addedAt);
         if (!docs.length) {
             list.appendChild(el('div', { className: 'lib-doc-empty', textContent: 'Aucun document. Ajoutez ou synchronisez.' }));
@@ -1826,8 +1827,11 @@ export class Library extends Common {
     async clearLibConv() {
         if (!await confirm('Effacer l\'historique de la bibliothèque pour ce domaine ?'))
             return;
+        const path = this._domain === 'all'
+            ? `${this.root}/${this.mainFolder}/_conversation`
+            : this.convPath(this._domain);
         this._messages = [];
-        await this.writeLibConversation([]);
+        await this.writeJson(path, this._messages); //!this must be writeJson not writeConversation
         this.renderChat(this._messages, this._chatBody);
         toast('Conversation effacée.', 'info');
     }
@@ -1839,12 +1843,12 @@ export class Library extends Common {
         if (!text)
             return;
         chatInput.value = '';
-        const docs = this._activeDomain === 'all' ? [] : this.getDocsMeta(this._activeDomain);
+        const docs = this._activeDomain.domain === 'all' ? [] : this.getDocsMeta(this._activeDomain.domain);
         const userMsg = {
             id: uid(), role: 'user',
             content: { type: 'text', text: text },
             timestamp: Date.now(),
-            domain: this._activeDomain
+            domain: this._activeDomain.domain
         };
         this._messages.push(userMsg);
         this.appendMsg(this.buildMsgEl(userMsg));
@@ -1852,8 +1856,8 @@ export class Library extends Common {
         sendBtn.disabled = true;
         const history = this._messages.slice(-21, -1);
         try {
-            const response = await this.claude.callClaudeLib(this._activeDomain, {
-                domain: this._activeDomain,
+            const response = await this.claude.callClaudeLib({
+                domain: this._activeDomain.domain,
                 docs,
                 skills: this._skills,
                 userMessage: text,
@@ -1862,16 +1866,7 @@ export class Library extends Common {
                 readFile: this.readLibFile,
             });
             typing.remove();
-            const asstMsg = {
-                id: uid(),
-                role: 'assistant',
-                content: { type: 'text', text: response },
-                timestamp: Date.now(),
-                domain: this._activeDomain
-            };
-            this._messages.push(asstMsg);
-            this.appendMsg(this.buildMsgEl(asstMsg));
-            await this.writeLibConversation(this._messages);
+            await this.processResponse(response, this._activeDomain, this._messages);
         }
         catch (err) {
             typing.remove();
@@ -1899,7 +1894,7 @@ export class Library extends Common {
             international: ['Conditions d\'applicabilité des conventions fiscales bilatérales.', 'Jurisprudence sur le centre des intérêts vitaux (CGI art. 4 B).', 'Règles de conflit de lois en matière successorale (Règl. UE 650/2012).'],
             all: ['Quels sont les documents disponibles dans la bibliothèque ?', 'Synthèse des principales règles jurisprudentielles sur la responsabilité civile.', 'Analyse comparative des régimes de responsabilité civile et pénale du dirigeant.'],
         };
-        const list = prompts[this._activeDomain] ?? prompts.all;
+        const list = prompts[this._activeDomain?.domain ?? 'all'];
         for (const p of list) {
             const btn = el('button', { className: 'quick-btn', textContent: p });
             btn.onclick = () => { {

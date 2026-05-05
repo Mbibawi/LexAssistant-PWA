@@ -1,14 +1,3 @@
-import { cases } from "../main.js"
-// ─── MIME types Claude accepts natively ──────────────────────────────────────
-
-const NATIVE_MIMES = new Set([
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'text/plain', 'text/html', 'text/markdown',
-]);
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -132,7 +121,7 @@ export class ClaudeAPI {
    * gFetch handles auth headers for Graph; for the proxy we pass rawBody=true
    * and inject the anthropic-version header ourselves since gFetch won't add it.
    */
-  private async callProxy(claudeBody: ClaudeConversation, api: string = 'claude'): Promise<string> {
+  private async callProxy(claudeBody: ClaudeConversation, api: string = 'claude'): Promise<string[]> {
     let body = JSON.stringify({ path: this.PATH, claudeBody: claudeBody });
     console.log('claudeBody: ', claudeBody)
     const resp = await fetch(
@@ -151,7 +140,9 @@ export class ClaudeAPI {
       const e = await resp.json().catch(() => ({ error: { message: resp.statusText } })) as { error?: { message?: string } };
       throw new Error(`Claude API : ${e.error?.message ?? resp.statusText}`);
     }
-    return await resp.text();
+
+    const json = JSON.parse(await resp.text()) as ClaudeResponse;
+    return json.content.map(c => c.text)
   }
 
   private claudeBody(
@@ -175,22 +166,32 @@ export class ClaudeAPI {
     docs: DocumentMeta[],
     readFile: (folderName: string | LibDomain, name: string) => Promise<ArrayBuffer>,
   ): Promise<ContentPart[]> {
+    const NATIVE_MIMES = new Set([
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'text/plain', 'text/html', 'text/markdown',
+    ]);
     const parts: ContentPart[] = [];
+
     for (const doc of docs) {
+      if (!NATIVE_MIMES.has(doc.mimeType)) continue;
       try {
         const buf = await readFile(folderName, doc.name);
-        parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
+        const part = parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
       } catch {
-        parts.push({
+        const message = `[Fichier "${doc.name}" inaccessible sur OneDrive]`;
+        console.log(message);
+        const part = {
           type: 'text',
           text: `[Fichier "${doc.name}" inaccessible sur OneDrive]`
-        });
+        };
       }
     }
     return parts;
 
     function docPart(name: string, mime: string, base64: string): ContentPart {
-      if (NATIVE_MIMES.has(mime)) {
         return {
           type: 'document',
           source: {
@@ -200,12 +201,6 @@ export class ClaudeAPI {
           },
           title: name
         };
-      };
-
-      return {
-        type: 'text',
-        text: `[Fichier joint : ${name} — format non lu nativement]`
-      };
     }
   }
 
@@ -252,7 +247,7 @@ export class ClaudeAPI {
       throw new Error('Aucun nouveau document à analyser.');
     }
 
-    const docParts = await this.buildDocParts(meta.folderName, docsToSend as DocumentMeta[], readFile);
+    const docParts = await this.buildDocParts(meta.folderName, docsToSend, readFile);
     const prompt = appendMode
       ? `Tu complètes une base de connaissance juridique existante avec de nouveaux documents.
 Produis un complément en markdown structuré, couvrant uniquement les nouveaux éléments apportés par les documents fournis.
@@ -287,7 +282,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Knowledge base — Library ─────────────────────────────────────────────
 
   async buildLibKnowledgeBase(
-    domain: LibDomain | 'all',
+    domain: string,
     docs: DocumentMeta[],
     readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
     existingKbDocs: DocumentMeta[] = [],
@@ -310,12 +305,12 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         content: [...docParts, { type: 'text', text: prompt }],
       }]),
     );
-    return data;
+    return data.join('\n');
     //return this.extractText(data);
   }
   // ─── Case conversation ────────────────────────────────────────────────────
 
-  async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string> {
+  async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string[]> {
     const system = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
 
     // If a knowledge base is available, inject it as a cached document
@@ -344,7 +339,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
 
   // ─── Library conversation ─────────────────────────────────────────────────
 
-  async callClaudeLib(folderName: string | LibDomain, opts: LibCallOpts): Promise<string> {
+  async callClaudeLib(opts: LibCallOpts): Promise<string[]> {
     const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
     const system = buildLibSystem(domain, skills);
 
@@ -362,7 +357,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         }
       ];
     } else {
-      firstUserContent = await this.buildDocParts(folderName, docs, readFile);
+      firstUserContent = await this.buildDocParts(domain, docs, readFile);
     }
 
     // Rebuild history: inject docs only in the first user turn
@@ -410,7 +405,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         system,
       ),
     );
-    return data;
+    return data.join('\n');
     //return this.extractText(data);
   }
 
