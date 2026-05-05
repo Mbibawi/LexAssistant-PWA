@@ -39,9 +39,9 @@
 html, body { height: 100%; overflow: hidden; font-family: var(--font); font-size: 14px; color: var(--c-gray-900); background: var(--c-gray-50); }
 
 /* ─── App shell ───────────────────────────────────────────────────────────── */
-#app-content { display: grid; grid-template-rows: var(--topbar-h) 1fr; height: 100vh; overflow: hidden; }
+#app-content { height: 100vh; overflow: hidden; }
 
-#main-layout { display: grid; grid-template-columns: var(--sidebar-w) 1fr; overflow: hidden; height: 100%; }
+#main-layout { display: grid; grid-template-columns: var(--sidebar-w) 1fr; overflow: hidden; height: 92%; }
 
 /* ─── Topbar ──────────────────────────────────────────────────────────────── */
 #topbar {

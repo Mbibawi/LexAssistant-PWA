@@ -1,29 +1,3 @@
-/**
- * onedrive.ts — Microsoft Graph API, path-based, class hierarchy.
- *
- * class Configuration  — localStorage config read/write
- * class OneDriveAuth   — MSAL auth + raw Graph/proxy fetch
- * class Folders        — base folder/file/JSON ops (extends OneDriveAuth)
- * class Scenario       — shared logic: skills, UI helpers, OD connection
- * class Cases          — dossiers scenario (extends Scenario)
- * class Library        — bibliothèque scenario (extends Scenario)
- *
- * OneDrive structure:
- *   <root>/
- *     _Skills/                       ← .md/.txt skills
- *     Affaires/<Folder>/
- *       _meta.json                   ← CaseMeta
- *       _notes.json                  ← PermanentNote[]
- *       _conversation.json           ← ChatMessage[]
- *       _kb_YYYY-MM-DD_HHmm.md      ← versioned knowledge bases
- *       <file>
- *     Bibliotheque/<Domain>/
- *       _meta.json                   ← LibDomainMeta
- *       _conversation.json           ← LibConversationMessage[]
- *       _kb_YYYY-MM-DD_HHmm.md      ← versioned knowledge bases
- *       <file>
- *     Bibliotheque/_conversation.json ← "all" domain conversation
- */
 import { downloadBlob as download, byID, toast, spinnerEl as spinner, el, toggle, uid, formatDate, formatDateTime, qs, qsa, setActive, } from './ui.js';
 import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
 import { ids, odSingleton } from '../main.js';

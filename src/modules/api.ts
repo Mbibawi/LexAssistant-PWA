@@ -58,53 +58,6 @@ function modeInstruction(mode: WorkMode): string {
   }
 }
 
-export function buildCaseSystem(
-  caseName: string,
-  caseDomain: string,
-  notes: PermanentNote[],
-  skills: Array<{ name: string; content: string }>,
-  mode: WorkMode,
-): string {
-  const noteBlock = notes.length
-    ? `\n\n## CORRECTIONS PERMANENTES (priorité absolue)\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`
-    : '';
-  const skillBlock = skills.length
-    ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
-    : '';
-  return `Tu es Lex Assistant, avocat collaborateur et assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
-
-## DOSSIER ACTIF
-Intitulé : ${caseName}
-Domaine : ${caseDomain}${noteBlock}${skillBlock}
-
-${permanentInstructions()}
-
-## ${modeInstruction(mode)}`;
-}
-
-export function buildLibSystem(
-  domain: LibDomain | 'all',
-  skills: Array<{ name: string; content: string }>,
-): string {
-  const labels: Record<string, string> = {
-    commercial: 'droit commercial', fiscal: 'droit fiscal', social: 'droit social',
-    civil: 'droit civil', penal: 'droit pénal', immobilier: 'droit immobilier',
-    international: 'droit international', autre: 'droit général', all: 'tous domaines juridiques',
-  };
-  const skillBlock = skills.length
-    ? `\n\n## INSTRUCTIONS MÉTIER\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
-    : '';
-  return `Tu es Lex Assistant, avocat collaborateur hautement spécialisé expert en ${labels[domain] ?? 'droit français'}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
-Tu as accès à une bibliothèque juridique thématique fournie avec chaque question.${skillBlock}
-
-## RÈGLES
-- Précision académique et pratique de haut niveau.
-- Cite toujours la source exacte (arrêt, article, auteur, nom du document, page) issue des documents fournis.
-- Si la question dépasse les documents, le signaler explicitement.
-- Propose des analyses comparatives et chronologies jurisprudentielles.
-${permanentInstructions()}`;
-}
-
 // ─── ClaudeAPI ────────────────────────────────────────────────────────────────
 
 export class ClaudeAPI {
@@ -311,7 +264,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Case conversation ────────────────────────────────────────────────────
 
   async callClaudeCase(folderName: string, opts: CaseCallOpts): Promise<string[]> {
-    const system = buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
+    const system = this.buildCaseSystem(opts.caseName, opts.caseDomain, opts.notes, opts.skills, opts.mode);
 
     // If a knowledge base is available, inject it as a cached document
     // instead of re-sending all raw files — token optimization
@@ -341,7 +294,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
 
   async callClaudeLib(opts: LibCallOpts): Promise<string[]> {
     const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
-    const system = buildLibSystem(domain, skills);
+    const system = this.buildLibSystem(domain, skills);
 
     let firstUserContent: ContentPart[];
     if (knowledgeBase) {
@@ -381,6 +334,53 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
     const data = await this.callProxy(this.claudeBody(4096, messages, system));
     return data;
     //return this.extractText(data);
+  }
+
+  private buildCaseSystem(
+    caseName: string,
+    caseDomain: string,
+    notes: PermanentNote[],
+    skills: Array<{ name: string; content: string }>,
+    mode: WorkMode,
+  ): string {
+    const noteBlock = notes.length
+      ? `\n\n## CORRECTIONS PERMANENTES (priorité absolue)\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`
+      : '';
+    const skillBlock = skills.length
+      ? `\n\n## INSTRUCTIONS MÉTIER (_Skills/)\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
+      : '';
+    return `Tu es Lex Assistant, avocat collaborateur et assistant juridique personnel de Maître Mina Bibawi, avocat au Barreau de Paris (toque B0976).
+
+## DOSSIER ACTIF
+Intitulé : ${caseName}
+Domaine : ${caseDomain}${noteBlock}${skillBlock}
+
+${permanentInstructions()}
+
+## ${modeInstruction(mode)}`;
+  }
+
+  private buildLibSystem(
+    domain: LibDomain | 'all',
+    skills: Array<{ name: string; content: string }>,
+  ): string {
+    const labels: Record<string, string> = {
+      commercial: 'droit commercial', fiscal: 'droit fiscal', social: 'droit social',
+      civil: 'droit civil', penal: 'droit pénal', immobilier: 'droit immobilier',
+      international: 'droit international', autre: 'droit général', all: 'tous domaines juridiques',
+    };
+    const skillBlock = skills.length
+      ? `\n\n## INSTRUCTIONS MÉTIER\n${skills.map((s) => `### ${s.name}\n${s.content}`).join('\n\n')}`
+      : '';
+    return `Tu es Lex Assistant, avocat collaborateur hautement spécialisé expert en ${labels[domain] ?? 'droit français'}, au service de Maître Mina Bibawi, avocat au Barreau de Paris.
+Tu as accès à une bibliothèque juridique thématique fournie avec chaque question.${skillBlock}
+
+## RÈGLES
+- Précision académique et pratique de haut niveau.
+- Cite toujours la source exacte (arrêt, article, auteur, nom du document, page) issue des documents fournis.
+- Si la question dépasse les documents, le signaler explicitement.
+- Propose des analyses comparatives et chronologies jurisprudentielles.
+${permanentInstructions()}`;
   }
 
   // ─── DOCX generation via Claude ──────────────────────────────────────────
