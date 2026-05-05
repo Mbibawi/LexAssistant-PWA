@@ -480,9 +480,9 @@ class Folders {
   protected readonly isSignedIn = this.od.isSignedIn;
   protected readonly setConfig = this.od.setConfig;
   protected readonly signOut = this.od.signOut;
+  protected readonly root = this.od.root;
   protected readonly isConfigured = this.od.isConfigured;
   protected readonly config = this.od.config;
-  protected readonly root = this.od.root;
   private get token() { return this.od.token };
   private get appConfigPath(): string {
     return `${this.root}/${APP_CONFIG_FILE}`;
@@ -662,7 +662,7 @@ class Folders {
   protected async writeFilePath(filePath: string, data: ArrayBuffer | string, mimeType: string): Promise<void> {
     const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     //return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
-    await this.gFetch(`${this.encode(filePath)}:/content`, {
+    await this.gFetch(`${filePath}:/content`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
       body,

@@ -433,9 +433,9 @@ class Folders {
     isSignedIn = this.od.isSignedIn;
     setConfig = this.od.setConfig;
     signOut = this.od.signOut;
+    root = this.od.root;
     isConfigured = this.od.isConfigured;
     config = this.od.config;
-    root = this.od.root;
     get token() { return this.od.token; }
     ;
     get appConfigPath() {
@@ -612,7 +612,7 @@ class Folders {
     async writeFilePath(filePath, data, mimeType) {
         const body = typeof data === 'string' ? new TextEncoder().encode(data) : data;
         //return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
-        await this.gFetch(`${this.encode(filePath)}:/content`, {
+        await this.gFetch(`${filePath}:/content`, {
             method: 'PUT',
             headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
             body,
