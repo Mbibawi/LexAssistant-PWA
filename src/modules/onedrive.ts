@@ -322,9 +322,9 @@ class MSAL {
 // ─── OneDriveAuth — MSAL auth + raw Graph/proxy fetch ────────────────────────
 
 export class OneDriveAuth {
-  private readonly GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
-  private readonly CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
+  readonly GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
   readonly cfg: Configuration = new Configuration();
+  private readonly CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
   private _scopes: string[] = ['Files.ReadWrite', 'User.Read', 'openid', 'profile'];
   private readonly _MSAL: MSAL = new MSAL();
   private _token: string | null = null;
@@ -427,10 +427,9 @@ export class OneDriveAuth {
     opts: RequestInit = {},
     rawBody = false,
   ): Promise<Response> {
-    const token = odSingleton._token ?? await odSingleton.signIn()//!!this must be the token of the singleton oneDrive instance not of the instance created when new Cases or new Library are called
+    const token = this._token ?? await this.signIn();
 
     const url = `${this.GRAPH}${path}`;
-
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       ...(opts.headers as Record<string, string> ?? {}),
@@ -479,8 +478,10 @@ export class Folders {
   protected readonly encode = this.od.encode;
   protected readonly isSignedIn = this.od.isSignedIn;
   protected readonly setConfig = this.od.setConfig;
+  protected readonly signIn = this.od.signIn;
   protected readonly signOut = this.od.signOut;
   protected readonly root = this.od.root;
+  protected readonly GRAPH = this.od.GRAPH;
   protected readonly isConfigured = this.od.isConfigured;
   protected readonly config = this.od.config;
   private get token() { return this.od.token };

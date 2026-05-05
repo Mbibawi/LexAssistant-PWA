@@ -297,8 +297,8 @@ class MSAL {
 // ─── OneDriveAuth — MSAL auth + raw Graph/proxy fetch ────────────────────────
 export class OneDriveAuth {
     GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/root:/';
-    CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
     cfg = new Configuration();
+    CLAUDE_PROXY = 'https://claude-ai-proxy-428231091257.europe-west1.run.app/api/proxy/';
     _scopes = ['Files.ReadWrite', 'User.Read', 'openid', 'profile'];
     _MSAL = new MSAL();
     _token = null;
@@ -387,7 +387,7 @@ export class OneDriveAuth {
      * - rawBody=true skips automatic Content-Type injection for binary/proxy calls.
      */
     async gFetch(path, opts = {}, rawBody = false) {
-        const token = odSingleton._token ?? await odSingleton.signIn(); //!!this must be the token of the singleton oneDrive instance not of the instance created when new Cases or new Library are called
+        const token = this._token ?? await this.signIn();
         const url = `${this.GRAPH}${path}`;
         const headers = {
             Authorization: `Bearer ${token}`,
@@ -432,8 +432,10 @@ export class Folders {
     encode = this.od.encode;
     isSignedIn = this.od.isSignedIn;
     setConfig = this.od.setConfig;
+    signIn = this.od.signIn;
     signOut = this.od.signOut;
     root = this.od.root;
+    GRAPH = this.od.GRAPH;
     isConfigured = this.od.isConfigured;
     config = this.od.config;
     get token() { return this.od.token; }
