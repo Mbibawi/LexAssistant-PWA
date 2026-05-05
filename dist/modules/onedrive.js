@@ -438,7 +438,7 @@ export class Folders {
     GRAPH = this.od.GRAPH;
     isConfigured = this.od.isConfigured;
     config = this.od.config;
-    get token() { return this.od.token; }
+    get _token() { return this.od.token; }
     ;
     get appConfigPath() {
         return `${this.root}/${APP_CONFIG_FILE}`;
@@ -616,7 +616,7 @@ export class Folders {
         //return this.oneDriveProxy('save', 'POST', { path: `${filePath}:/content`, body, mimeType });
         await this.gFetch(`${filePath}:/content`, {
             method: 'PUT',
-            headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': mimeType },
+            headers: { Authorization: `Bearer ${this._token}`, 'Content-Type': mimeType },
             body,
         }, true);
     }
