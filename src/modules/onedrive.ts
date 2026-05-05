@@ -768,14 +768,17 @@ abstract class Common extends Folders {
     } catch { return []; }
   }
 
-
+  /**
+   * Builds a knowledge base for the selected case folder or library domain.
+   * @param caller 
+   * @param activeFolder 
+   * @param appendMode 
+   * @returns 
+   */
   async buildKB(caller: Cases | Library, activeFolder: FolderMeta | null, appendMode: Boolean = false) {
-    const info = caller instanceof Cases ?
-      'Vous devez sélectionner un dossier spécifique pour générer une base de connaissance pour ce dossier'
-      : caller instanceof Library ? 'Vous devez sélectionner un domaine spécifique pour générer une base de connaissance pour ce domaine' : null;
-
+    const type = caller instanceof Cases ? 'dossier' : caller instanceof Library ? 'domaine' : null;
     if (!activeFolder || activeFolder.domain === 'all') {
-      if (info) toast(info, 'info');
+      if (type) toast(`Vous devez sélectionner un ${type} spécifique pour générer une base de connaissance pour ce ${type}`, 'info');
       return;
     }
     const btn = byID(ids.btnBuildKb) as HTMLButtonElement | null;

@@ -2,8 +2,6 @@
 
 import { Library, Cases } from "./onedrive";
 
-
-
 /** Convert any string to base64 (UTF-8 safe) */
 function strToBase64(text: string): string {
   return btoa(encodeURIComponent(text));
