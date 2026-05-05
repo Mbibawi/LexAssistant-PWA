@@ -1,5 +1,7 @@
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+import { Library, Cases } from "./onedrive";
+
 
 
 /** Convert any string to base64 (UTF-8 safe) */
@@ -117,10 +119,10 @@ export class ClaudeAPI {
   private async buildDocParts(
     folderName: string | LibDomain,
     docs: DocumentMeta[],
-    readFile: (folderName: string | LibDomain, name: string) => Promise<ArrayBuffer>,
+    caller: Cases | Library
   ): Promise<ContentPart[]> {
     const NATIVE_MIMES = new Set([
-      'application/pdf',
+      'application/pdf',      
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -131,8 +133,9 @@ export class ClaudeAPI {
     for (const doc of docs) {
       if (!NATIVE_MIMES.has(doc.mimeType)) continue;
       try {
-        const buf = await readFile(folderName, doc.name);
-        const part = parts.push(docPart(doc.name, doc.mimeType, this.toBase64(buf)));
+        const buf = await caller.readFile(folderName, doc.name);
+        const part = docPart(doc.name, doc.mimeType, this.toBase64(buf));
+        if (part) parts.push(part);
       } catch {
         const message = `[Fichier "${doc.name}" inaccessible sur OneDrive]`;
         console.log(message);
@@ -191,7 +194,7 @@ export class ClaudeAPI {
    */
   async buildCaseKnowledgeBase(
     meta: FolderMeta,
-    readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
+    caller: Cases | Library,
     existingKbDocs: DocumentMeta[] = [],
     appendMode: Boolean = false,
   ): Promise<string> {
@@ -200,7 +203,7 @@ export class ClaudeAPI {
       throw new Error('Aucun nouveau document à analyser.');
     }
 
-    const docParts = await this.buildDocParts(meta.folderName, docsToSend, readFile);
+    const docParts = await this.buildDocParts(meta.folderName, docsToSend, caller);
     const prompt = appendMode
       ? `Tu complètes une base de connaissance juridique existante avec de nouveaux documents.
 Produis un complément en markdown structuré, couvrant uniquement les nouveaux éléments apportés par les documents fournis.
@@ -218,9 +221,9 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
    * Returns null if none exists.
    */
   async loadLatestCaseKb(
-    folderPath: string,
+    folderName: string,
     items: GraphDriveItem[],
-    readFile: (path: string) => Promise<ArrayBuffer>,
+    caller: Library | Cases
   ): Promise<string | null> {
     //const items = await listFiles(folderPath).catch(() => [] as GraphDriveItem[]);
     const kbFiles = items
@@ -228,23 +231,22 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
       .sort((a, b) => b.name.localeCompare(a.name)); // lexicographic = chronological
     if (!kbFiles.length) return null;
     const latest = kbFiles[0];
-    const buf = await readFile(`${folderPath}/${latest.name}`);
+    const buf = await caller.readFile(folderName, latest.name);
     return new TextDecoder().decode(buf);
   }
 
   // ─── Knowledge base — Library ─────────────────────────────────────────────
 
   async buildLibKnowledgeBase(
-    domain: string,
-    docs: DocumentMeta[],
-    readFile: (folderName: string, name: string) => Promise<ArrayBuffer>,
+    domain: FolderMeta,
+    caller: Library | Cases,
     existingKbDocs: DocumentMeta[] = [],
     appendMode: Boolean = false,
   ): Promise<string> {
-    const docsToSend = await this.filterNewDocs(docs, existingKbDocs);
+    const docsToSend = await this.filterNewDocs(domain.documents, existingKbDocs);
     if (!docsToSend.length) throw new Error('Aucun nouveau document à analyser.');
 
-    const docParts = await this.buildDocParts(domain, docsToSend, readFile);
+    const docParts = await this.buildDocParts(domain.folderName, docsToSend, caller);
     const prompt = appendMode
       ? `Tu complètes une base de connaissance juridique thématique existante (domaine : ${domain}) avec de nouveaux documents. Produis un complément en markdown structuré. Ne répète pas l'existant. Commence directement sans préambule.`
       : `Analyse ces documents juridiques (domaine : ${domain}) et produis une base de connaissance thématique structurée en markdown. Couvre : sources, règles clés, jurisprudence, doctrine, évolutions récentes. Structure avec des titres clairs. Commence directement sans préambule.`;
@@ -279,7 +281,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         { type: 'text', text: opts.userMessage },
       ];
     } else {
-      const docParts = await this.buildDocParts(folderName, opts.docs, opts.readFile);
+      const docParts = await this.buildDocParts(folderName, opts.docs, opts.caller);
       content = [...docParts, { type: 'text', text: opts.userMessage }];
     }
 
@@ -293,7 +295,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
   // ─── Library conversation ─────────────────────────────────────────────────
 
   async callClaudeLib(opts: LibCallOpts): Promise<string[]> {
-    const { domain, skills, knowledgeBase, history, userMessage, docs, readFile } = opts;
+    const { domain, skills, knowledgeBase, history, userMessage, docs, caller } = opts;
     const system = this.buildLibSystem(domain, skills);
 
     let firstUserContent: ContentPart[];
@@ -310,7 +312,7 @@ Structure avec des titres clairs (## et ###). Commence directement sans préambu
         }
       ];
     } else {
-      firstUserContent = await this.buildDocParts(domain, docs, readFile);
+      firstUserContent = await this.buildDocParts(domain, docs, caller.readFile);
     }
 
     // Rebuild history: inject docs only in the first user turn

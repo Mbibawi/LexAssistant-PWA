@@ -682,7 +682,6 @@ abstract class Common extends Folders {
 
 
   // ─── Abstract Methods ───────────────────────────────────────────────────────────────
-  protected abstract buildKnowledgeBase(appendMode: Boolean): Promise<void>;
   abstract showUI(): void;
   protected abstract buildUI(content: HTMLElement): { sendBtn: HTMLButtonElement, userInput: HTMLTextAreaElement };
   protected abstract renderDocList(): void;
@@ -715,6 +714,9 @@ abstract class Common extends Folders {
     return await this.writeJson(this.convPath(f), { messages: m } satisfies ConversationFile);
   }
 
+  async readFile(folderName: string, fileName: string): Promise<ArrayBuffer> {
+    return await this.readFilePath(`${this.mainPath(folderName)}/${fileName}`);
+  }
   protected async processResponse(response: string[], folder: FolderMeta, messages: ClaudeMessage[], mode?: WorkMode, docName?: string) {
     const asst: ClaudeMessage = {
       id: uid(),
@@ -764,6 +766,44 @@ abstract class Common extends Folders {
       this.updateSkillIndicator();
       return skills;
     } catch { return []; }
+  }
+
+
+  async buildKB(caller: Cases | Library, activeFolder: FolderMeta | null, appendMode: Boolean = false) {
+    const info = caller instanceof Cases ?
+      'Vous devez sélectionner un dossier spécifique pour générer une base de connaissance pour ce dossier'
+      : caller instanceof Library ? 'Vous devez sélectionner un domaine spécifique pour générer une base de connaissance pour ce domaine' : null;
+
+    if (!activeFolder || activeFolder.domain === 'all') {
+      if (info) toast(info, 'info');
+      return;
+    }
+    const btn = byID(ids.btnBuildKb) as HTMLButtonElement | null;
+    if (btn) { btn.disabled = true; btn.textContent = '🧠 Génération…'; }
+    try {
+      const markdown =
+        caller instanceof Cases ?
+          await this.claude.buildCaseKnowledgeBase(
+        activeFolder,
+        caller,
+        [], // TODO: pass existing KB docs fingerprints from _meta if tracked
+        appendMode,
+          )
+          : caller instanceof Library ? await this.claude.buildLibKnowledgeBase(activeFolder, caller, activeFolder.documents, appendMode)
+            : null;
+      if (!markdown) return;
+
+      const filename = `_kb${activeFolder.name ?? activeFolder.domain}_${this.claude.kbTimestamp()}.md`;
+      const filePath = `${this.mainPath(activeFolder.folderName)}/${filename}`;
+      await this.writeFilePath(filePath, markdown, 'text/markdown');
+      this._kb = markdown;
+      toast('Base de connaissance générée et sauvegardée.', 'success');
+    } catch (err) {
+      toast('Erreur KB : ' + (err as Error).message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🧠 Base de connaissance'; }
+    }
+
   }
 
   // ─── OneDrive connection ──────────────────────────────────────────────────
@@ -1070,10 +1110,6 @@ export class Cases extends Common {
   private writeNotes(f: string, n: PermanentNote[]) { return this.writeJson(this.notesPath(f), { notes: n } satisfies NotesFile); }
 
 
-  private readCaseFile(folderName: string, fileName: string): Promise<ArrayBuffer> {
-    return this.readFilePath(`${this.mainPath(folderName)}/${fileName}`);
-  }
-
   private async writeCaseFile(folderName: string, fileName: string, data: ArrayBuffer, mimeType: string): Promise<void> {
     await this.ensureFolder(this.mainPath(folderName));
     await this.writeFileLarge(`${this.mainPath(folderName)}/${fileName}`, data, mimeType);
@@ -1140,11 +1176,10 @@ export class Cases extends Common {
     this._activeCase.documents = await this.listFiles(this.mainPath(this._activeCase.folderName));
 
     // Try to load the latest knowledge base silently
-    const folderPath = this.mainPath(folderName);
     this._kb = await this.claude.loadLatestCaseKb(
-      folderPath,
-      await this.listFolderItems(folderPath),
-      this.readFilePath,
+      folderName,
+      await this.listFolderItems(folderName),
+      this,
     );
 
     qsa<HTMLElement>('.case-item').forEach((el) =>
@@ -1176,30 +1211,6 @@ export class Cases extends Common {
   }
 
   // ─── Knowledge base ───────────────────────────────────────────────────────
-
-  protected async buildKnowledgeBase(appendMode: Boolean = false): Promise<void> {
-    if (!this._activeCase) return;
-    const btn = byID(ids.btnBuildKb) as HTMLButtonElement | null;
-    if (btn) { btn.disabled = true; btn.textContent = '🧠 Génération…'; }
-    try {
-      const markdown = await this.claude.buildCaseKnowledgeBase(
-        this._activeCase,
-        this.readCaseFile,
-        [], // TODO: pass existing KB docs fingerprints from _meta if tracked
-        appendMode,
-      );
-
-      const filename = `_kb${this._activeCase.name}_${this.claude.kbTimestamp()}.md`;
-      const filePath = `${this.mainPath(this._activeCase.folderName)}/${filename}`;
-      await this.writeFilePath(filePath, markdown, 'text/markdown');
-      this._kb = markdown;
-      toast('Base de connaissance générée et sauvegardée.', 'success');
-    } catch (err) {
-      toast('Erreur KB : ' + (err as Error).message, 'error');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '🧠 Base de connaissance'; }
-    }
-  }
 
   // ─── Render: case list ────────────────────────────────────────────────────
 
@@ -1381,7 +1392,7 @@ export class Cases extends Common {
         mode: this.activeMode,
         userMessage: text,
           knowledgeBase: this._kb ?? undefined,
-        readFile: this.readCaseFile,
+          caller: this
       });
 
       typing.remove();
@@ -1412,7 +1423,7 @@ export class Cases extends Common {
     this.onClick(btn(ids.btnOneDrive), async () => await odSingleton.signIn());
     this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
     this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
-    this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
+    this.onClick(btn(ids.btnBuildKb), () => this.buildKB(this, this._activeCase));
     this.onClick(btn(ids.btnCaseSummary), async () => {
       const chatInput = byID(ids.userInput) as HTMLTextAreaElement | null;
       if (!chatInput) return;
@@ -1565,7 +1576,7 @@ export class Cases extends Common {
     const items = [
       { label: 'Modifier', action: () => this.openCaseFormModal(c) },
       { label: '☁ Sync OneDrive', action: () => this.refreshCaseFromOneDrive() },
-      { label: '🧠 Compléter base KB', action: () => this.buildKnowledgeBase(true) },
+      { label: '🧠 Compléter base KB', action: () => this.buildKB(this, this._activeCase, true) },
       { label: 'Effacer conversation', action: () => this.clearConversation(c.folderName) },
       { label: 'Supprimer le dossier', action: () => this.deleteCaseIndex(c.folderName), danger: true },
     ];
@@ -1734,7 +1745,7 @@ export class Library extends Common {
     const kbBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '🧠 Base KB', id: ids.btnBuildKb });
     upBtn.onclick = () => (fi as HTMLInputElement).click();
     synBtn.onclick = async () => await this.syncCurrentDomain();
-    kbBtn.onclick = () => this.buildKnowledgeBase();
+    kbBtn.onclick = () => this.buildKB(this, this._activeDomain);
     const acts = el('div', { className: 'lib-action-row' });
     acts.append(fi, upBtn, synBtn, kbBtn);
 
@@ -1773,12 +1784,6 @@ export class Library extends Common {
 
 
   // ─── OneDrive CRUD ────────────────────────────────────────────────────────
-
-
-
-  async readLibFile(domain: string, fileName: string): Promise<ArrayBuffer> {
-    return this.readFilePath(`${this.mainPath(domain)}/${fileName}`);
-  }
   async writeLibFile(domain: LibDomain, fileName: string, data: ArrayBuffer, mimeType: string): Promise<void> {
     await this.ensureFolder(this.mainPath(domain));
     await this.writeFileLarge(`${this.mainPath(domain)}/${fileName}`, data, mimeType);
@@ -1839,28 +1844,6 @@ export class Library extends Common {
 
   // ─── Knowledge base ───────────────────────────────────────────────────────
 
-  async buildKnowledgeBase(appendMode: Boolean = false): Promise<void> {
-    if (this._domain === 'all') { toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info'); return; }
-    const btn = byID(ids.btnBuildKb) as HTMLButtonElement | null;
-    if (btn) { btn.disabled = true; btn.textContent = '🧠 Génération…'; }
-    try {
-      const docs = this._domainDocs.get(this._domain) ?? [];
-      const markdown = await this.claude.buildLibKnowledgeBase(
-        this._domain,
-        docs,
-        (name) => this.readLibFile(this._domain as LibDomain, name),
-        [],
-        appendMode,
-      );
-      // Save versioned markdown to OneDrive
-      const filename = `_kb_${this._domain}_${this.claude.kbTimestamp}.md`;
-      const filePath = `${this.mainPath(this._domain)}/${filename}`;
-      await this.writeFilePath(filePath, markdown, 'text/markdown');
-      this._kb = markdown;
-      toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
-    } catch (err) { toast('Erreur KB : ' + (err as Error).message, 'error'); }
-    finally { if (btn) { btn.disabled = false; btn.textContent = '🧠 Base de connaissance'; } }
-  }
 
   // ─── Domain navigation ────────────────────────────────────────────────────
 
@@ -1887,11 +1870,10 @@ export class Library extends Common {
     if (domain !== 'all') {
       await this.folderMeta(domain);
       // Try to load the latest KB for this domain
-      const folderPath = this.mainPath(domain);
       this._kb = await this.claude.loadLatestCaseKb(
-        folderPath,
-        await this.listFolderItems(folderPath),
-        this.readFilePath,
+        domain,
+        await this.listFolderItems(domain),
+        this,
       );
     }
     this._messages = await this.readConversation<ClaudeMessage>(domain).catch(() => []);
@@ -2016,7 +1998,7 @@ export class Library extends Common {
         userMessage: text,
         history,
           knowledgeBase: this._kb ?? undefined,
-        readFile: this.readLibFile,
+          caller: this
       });
       typing.remove();
       await this.processResponse(response, this._activeDomain, this._messages);

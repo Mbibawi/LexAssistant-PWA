@@ -645,6 +645,9 @@ class Common extends Folders {
             return Promise.resolve();
         return await this.writeJson(this.convPath(f), { messages: m });
     }
+    async readFile(folderName, fileName) {
+        return await this.readFilePath(`${this.mainPath(folderName)}/${fileName}`);
+    }
     async processResponse(response, folder, messages, mode, docName) {
         const asst = {
             id: uid(),
@@ -697,6 +700,44 @@ class Common extends Folders {
         }
         catch {
             return [];
+        }
+    }
+    async buildKB(caller, activeFolder, appendMode = false) {
+        const info = caller instanceof Cases ?
+            'Vous devez sélectionner un dossier spécifique pour générer une base de connaissance pour ce dossier'
+            : caller instanceof Library ? 'Vous devez sélectionner un domaine spécifique pour générer une base de connaissance pour ce domaine' : null;
+        if (!activeFolder || activeFolder.domain === 'all') {
+            if (info)
+                toast(info, 'info');
+            return;
+        }
+        const btn = byID(ids.btnBuildKb);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '🧠 Génération…';
+        }
+        try {
+            const markdown = caller instanceof Cases ?
+                await this.claude.buildCaseKnowledgeBase(activeFolder, caller, [], // TODO: pass existing KB docs fingerprints from _meta if tracked
+                appendMode)
+                : caller instanceof Library ? await this.claude.buildLibKnowledgeBase(activeFolder, caller, activeFolder.documents, appendMode)
+                    : null;
+            if (!markdown)
+                return;
+            const filename = `_kb${activeFolder.name ?? activeFolder.domain}_${this.claude.kbTimestamp()}.md`;
+            const filePath = `${this.mainPath(activeFolder.folderName)}/${filename}`;
+            await this.writeFilePath(filePath, markdown, 'text/markdown');
+            this._kb = markdown;
+            toast('Base de connaissance générée et sauvegardée.', 'success');
+        }
+        catch (err) {
+            toast('Erreur KB : ' + err.message, 'error');
+        }
+        finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🧠 Base de connaissance';
+            }
         }
     }
     // ─── OneDrive connection ──────────────────────────────────────────────────
@@ -943,9 +984,6 @@ export class Cases extends Common {
     // ─── OneDrive CRUD ────────────────────────────────────────────────────────
     async readNotes(f) { return (await this.readJson(this.notesPath(f)))?.notes ?? []; }
     writeNotes(f, n) { return this.writeJson(this.notesPath(f), { notes: n }); }
-    readCaseFile(folderName, fileName) {
-        return this.readFilePath(`${this.mainPath(folderName)}/${fileName}`);
-    }
     async writeCaseFile(folderName, fileName, data, mimeType) {
         await this.ensureFolder(this.mainPath(folderName));
         await this.writeFileLarge(`${this.mainPath(folderName)}/${fileName}`, data, mimeType);
@@ -1008,8 +1046,7 @@ export class Cases extends Common {
         this._messages = await this.readConversation(folderName);
         this._activeCase.documents = await this.listFiles(this.mainPath(this._activeCase.folderName));
         // Try to load the latest knowledge base silently
-        const folderPath = this.mainPath(folderName);
-        this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listFolderItems(folderPath), this.readFilePath);
+        this._kb = await this.claude.loadLatestCaseKb(folderName, await this.listFolderItems(folderName), this);
         qsa('.case-item').forEach((el) => el.classList.toggle('active', el.dataset.folder === caseMeta.folderName));
         const nameEl = byID(ids.topBarCaseName);
         const domainEl = byID(ids.topBarCaseDomain);
@@ -1048,33 +1085,6 @@ export class Cases extends Common {
         }
     }
     // ─── Knowledge base ───────────────────────────────────────────────────────
-    async buildKnowledgeBase(appendMode = false) {
-        if (!this._activeCase)
-            return;
-        const btn = byID(ids.btnBuildKb);
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = '🧠 Génération…';
-        }
-        try {
-            const markdown = await this.claude.buildCaseKnowledgeBase(this._activeCase, this.readCaseFile, [], // TODO: pass existing KB docs fingerprints from _meta if tracked
-            appendMode);
-            const filename = `_kb${this._activeCase.name}_${this.claude.kbTimestamp()}.md`;
-            const filePath = `${this.mainPath(this._activeCase.folderName)}/${filename}`;
-            await this.writeFilePath(filePath, markdown, 'text/markdown');
-            this._kb = markdown;
-            toast('Base de connaissance générée et sauvegardée.', 'success');
-        }
-        catch (err) {
-            toast('Erreur KB : ' + err.message, 'error');
-        }
-        finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = '🧠 Base de connaissance';
-            }
-        }
-    }
     // ─── Render: case list ────────────────────────────────────────────────────
     renderCaseList() {
         const list = byID(ids.caseList);
@@ -1239,7 +1249,7 @@ export class Cases extends Common {
                 mode: this.activeMode,
                 userMessage: text,
                 knowledgeBase: this._kb ?? undefined,
-                readFile: this.readCaseFile,
+                caller: this
             });
             typing.remove();
             let docName;
@@ -1270,7 +1280,7 @@ export class Cases extends Common {
         this.onClick(btn(ids.btnOneDrive), async () => await odSingleton.signIn());
         this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
         this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
-        this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
+        this.onClick(btn(ids.btnBuildKb), () => this.buildKB(this, this._activeCase));
         this.onClick(btn(ids.btnCaseSummary), async () => {
             const chatInput = byID(ids.userInput);
             if (!chatInput)
@@ -1418,7 +1428,7 @@ export class Cases extends Common {
         const items = [
             { label: 'Modifier', action: () => this.openCaseFormModal(c) },
             { label: '☁ Sync OneDrive', action: () => this.refreshCaseFromOneDrive() },
-            { label: '🧠 Compléter base KB', action: () => this.buildKnowledgeBase(true) },
+            { label: '🧠 Compléter base KB', action: () => this.buildKB(this, this._activeCase, true) },
             { label: 'Effacer conversation', action: () => this.clearConversation(c.folderName) },
             { label: 'Supprimer le dossier', action: () => this.deleteCaseIndex(c.folderName), danger: true },
         ];
@@ -1577,7 +1587,7 @@ export class Library extends Common {
         const kbBtn = el('button', { className: 'btn btn--ghost btn--sm', textContent: '🧠 Base KB', id: ids.btnBuildKb });
         upBtn.onclick = () => fi.click();
         synBtn.onclick = async () => await this.syncCurrentDomain();
-        kbBtn.onclick = () => this.buildKnowledgeBase();
+        kbBtn.onclick = () => this.buildKB(this, this._activeDomain);
         const acts = el('div', { className: 'lib-action-row' });
         acts.append(fi, upBtn, synBtn, kbBtn);
         sidebar.append(hdr, el('div', { className: 'lib-domain-pills', id: ids.libDomainPills }), el('div', { className: 'lib-doc-list', id: ids.libDocList }), acts);
@@ -1606,9 +1616,6 @@ export class Library extends Common {
         return this.DOMAINS.find((d) => d.id === id)?.label ?? id;
     }
     // ─── OneDrive CRUD ────────────────────────────────────────────────────────
-    async readLibFile(domain, fileName) {
-        return this.readFilePath(`${this.mainPath(domain)}/${fileName}`);
-    }
     async writeLibFile(domain, fileName, data, mimeType) {
         await this.ensureFolder(this.mainPath(domain));
         await this.writeFileLarge(`${this.mainPath(domain)}/${fileName}`, data, mimeType);
@@ -1677,36 +1684,6 @@ export class Library extends Common {
         }
     }
     // ─── Knowledge base ───────────────────────────────────────────────────────
-    async buildKnowledgeBase(appendMode = false) {
-        if (this._domain === 'all') {
-            toast('Sélectionnez un domaine spécifique pour générer une base de connaissance.', 'info');
-            return;
-        }
-        const btn = byID(ids.btnBuildKb);
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = '🧠 Génération…';
-        }
-        try {
-            const docs = this._domainDocs.get(this._domain) ?? [];
-            const markdown = await this.claude.buildLibKnowledgeBase(this._domain, docs, (name) => this.readLibFile(this._domain, name), [], appendMode);
-            // Save versioned markdown to OneDrive
-            const filename = `_kb_${this._domain}_${this.claude.kbTimestamp}.md`;
-            const filePath = `${this.mainPath(this._domain)}/${filename}`;
-            await this.writeFilePath(filePath, markdown, 'text/markdown');
-            this._kb = markdown;
-            toast('Base de connaissance bibliothèque générée et sauvegardée.', 'success');
-        }
-        catch (err) {
-            toast('Erreur KB : ' + err.message, 'error');
-        }
-        finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = '🧠 Base de connaissance';
-            }
-        }
-    }
     // ─── Domain navigation ────────────────────────────────────────────────────
     renderDomainPills() {
         const container = byID(ids.libDomainPills);
@@ -1732,8 +1709,7 @@ export class Library extends Common {
         if (domain !== 'all') {
             await this.folderMeta(domain);
             // Try to load the latest KB for this domain
-            const folderPath = this.mainPath(domain);
-            this._kb = await this.claude.loadLatestCaseKb(folderPath, await this.listFolderItems(folderPath), this.readFilePath);
+            this._kb = await this.claude.loadLatestCaseKb(domain, await this.listFolderItems(domain), this);
         }
         this._messages = await this.readConversation(domain).catch(() => []);
         this.renderDomainPills();
@@ -1848,7 +1824,7 @@ export class Library extends Common {
                 userMessage: text,
                 history,
                 knowledgeBase: this._kb ?? undefined,
-                readFile: this.readLibFile,
+                caller: this
             });
             typing.remove();
             await this.processResponse(response, this._activeDomain, this._messages);

@@ -71,7 +71,7 @@ type CaseCallOpts = {
   userMessage: string;
   knowledgeBase: string | undefined;
   /** Caller provides file reader scoped to the case folder */
-  readFile: (folderName, fileName: string) => Promise<ArrayBuffer>;
+  caller:Cases
 };
 
 type LibCallOpts = {
@@ -82,7 +82,7 @@ type LibCallOpts = {
   history: ClaudeMessage[];
   knowledgeBase: string | undefined;
   /** Caller provides file reader scoped to the library domain folder */
-  readFile: (folderName: LibDomain | string, fileName: string) => Promise<ArrayBuffer>;
+  caller: Library;
 };
 
 
