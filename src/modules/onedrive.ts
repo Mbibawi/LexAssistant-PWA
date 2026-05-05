@@ -30,7 +30,7 @@ import {
   formatDate, formatDateTime, qs, qsa, setActive,
 } from './ui.js';
 import { mimeLabel, mimeIcon, formatSize } from './ingest.js';
-import { ids, oneDrive } from '../main.js';
+import { ids, odSingleton } from '../main.js';
 import { renderMarkdown } from './markdown.js';
 import { ClaudeAPI } from './api.js';
 import { generateDocx } from './docxgen.js';
@@ -389,7 +389,7 @@ export class OneDriveAuth {
    */
   async oneDriveProxy(roote: string, method: string, payload: { path: string, body?: Uint8Array<ArrayBuffer> | ArrayBuffer | string, mimeType?: string }) {
     if (!this.userName) await this.signIn();
-    console.log('user oid = ', oneDrive._userOid)
+    console.log('user oid = ', odSingleton._userOid)
     const url = `https://onedrive-proxy-428231091257.europe-west1.run.app/api/proxy/${roote}`;
 
     const { body, path, mimeType } = payload;
@@ -427,12 +427,12 @@ export class OneDriveAuth {
     opts: RequestInit = {},
     rawBody = false,
   ): Promise<Response> {
+    const token = odSingleton._token ?? await odSingleton.signIn()//!!this must be the token of the singleton oneDrive instance not of the instance created when new Cases or new Library are called
 
-    if (!oneDrive._token) await oneDrive.signIn();
     const url = `${this.GRAPH}${path}`;
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this._token}`,
+      Authorization: `Bearer ${token}`,
       ...(opts.headers as Record<string, string> ?? {}),
     };
 
@@ -461,7 +461,7 @@ export class OneDriveAuth {
 
 // ─── Folders — base file/folder/JSON operations ───────────────────────────────
 
-class Folders extends OneDriveAuth {
+class Folders {
   private readonly SUPPORTED_EXTS: Record<string, string> = {
     pdf: 'application/pdf',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -474,13 +474,22 @@ class Folders extends OneDriveAuth {
     md: 'text/markdown',
     rtf: 'application/rtf',
   }
+  private readonly od = odSingleton;
+  protected readonly gFetch = this.od.gFetch;
+  protected readonly encode = this.od.encode;
+  protected readonly isSignedIn = this.od.isSignedIn;
+  protected readonly setConfig = this.od.setConfig;
+  protected readonly signOut = this.od.signOut;
+  protected readonly isConfigured = this.od.isConfigured;
+  protected readonly config = this.od.config;
+  protected readonly root = this.od.root;
+  private get token() { return this.od.token };
   private get appConfigPath(): string {
     return `${this.root}/${APP_CONFIG_FILE}`;
   }
   protected mainFolder: string | null = null;
 
   constructor(mainFolder: string) {
-    super();
     this.mainFolder = mainFolder;
   }
   /**
@@ -787,8 +796,8 @@ abstract class Common extends Folders {
   updateODStatus(): void {
     const statusEl = byID(ids.oneDriveStatus);
     if (!statusEl) return;
-    if (oneDrive.userName) {
-      statusEl.textContent = `☁ ${oneDrive.userName}`;
+    if (odSingleton.userName) {
+      statusEl.textContent = `☁ ${odSingleton.userName}`;
       statusEl.className = 'od-status od-status--connected';
     } else {
       statusEl.textContent = '☁ Non connecté';
@@ -973,8 +982,8 @@ export class Cases extends Common {
     // Wire all scenario-specific UI
     this.setupBarsBtns();
     this.setupInputArea(userInput, sendBtn);
-    if (!oneDrive.userName) await oneDrive.signIn();
-    if (!oneDrive.userName) return this.showNotConnected();
+    if (!odSingleton.userName) await odSingleton.signIn();
+    if (!odSingleton.userName) return this.showNotConnected();
     this.updateODStatus();
     await this.loadAllSubFolders();//!this must come before renderChat(), because it sets this._activeCase
     await this.fetchSkills();
@@ -1425,7 +1434,7 @@ export class Cases extends Common {
     this.onClick(btn(ids.btnOdSync), () => this.refreshCaseFromOneDrive());
     this.onClick(btn('btn-new-item-top'), () => this.openCaseFormModal(null));
     this.onClick(btn(ids.settings), () => this.openSettingsModal());
-    this.onClick(btn(ids.btnOneDrive), async () => await oneDrive.signIn());
+    this.onClick(btn(ids.btnOneDrive), async () => await odSingleton.signIn());
     this.onClick(btn(ids.btnNotesOpen), () => this.openNotesModal());
     this.onClick(btn(ids.btnUpload), () => btn(ids.fileInput)?.click());
     this.onClick(btn(ids.btnBuildKb), () => this.buildKnowledgeBase());
@@ -1497,7 +1506,7 @@ export class Cases extends Common {
   // ─── Modals ───────────────────────────────────────────────────────────────
 
   private async openCaseFormModal(existing: FolderMeta | null): Promise<void> {
-    if (!oneDrive.userName) await oneDrive.signIn();
+    if (!odSingleton.userName) await odSingleton.signIn();
     //if (!oneDrive.account) { this.openSettingsModal(); toast('Connectez OneDrive d\'abord.', 'error'); return; }
     const isEdit = !!existing;
     const overlay = el('div', { className: 'modal-overlay' });
@@ -1718,7 +1727,7 @@ export class Library extends Common {
   async showUI(): Promise<void> {
     const content = byID(ids.content)!;
     const { userInput, sendBtn } = this.buildUI(content);
-    if (!oneDrive.userName) return this.showNotConnected();
+    if (!odSingleton.userName) return this.showNotConnected();
 
     this.updateODStatus();
     this.setupInputArea(userInput, sendBtn);
@@ -1820,7 +1829,7 @@ export class Library extends Common {
   // ─── Sync from OneDrive ───────────────────────────────────────────────────
 
   async syncDomainFromOneDrive(domain: string): Promise<number> {
-    if (!oneDrive.userName) await oneDrive.signIn();
+    if (!odSingleton.userName) await odSingleton.signIn();
     let added = 0;
     const files = await this.listFiles(this.mainPath(domain));
     const meta = await this.folderMeta(domain);

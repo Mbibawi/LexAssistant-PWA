@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', boot);
 // ─── Initiale single shared instances ───────────────────────────────────────────────────
 const cases = new Cases("Affaires");
 const library = new Library("Bibliotheque");
-export const oneDrive = new OneDriveAuth()
+export const odSingleton = new OneDriveAuth()
 const officeAddin = new OfficeAddin(cases);
 
 export const ids = {
@@ -270,7 +270,7 @@ function buildSettingsShortcut(
   container: HTMLElement
 ) {
   const row = el("div", { className: "selector-settings-row" });
-  const userName = oneDrive.userName;
+  const userName = odSingleton.userName;
   const odStatus = userName
     ? el("span", {
       className: "selector-od-status selector-od-status--connected",
@@ -292,10 +292,10 @@ function buildSettingsShortcut(
   });
   //configBtn.onclick = () => cases.openSettingsModal();//!add a general onedrive settings modal to be opedn
   odConnect.onclick = async () => {
-    if (!oneDrive.account) return;
+    if (!odSingleton.account) return;
     const btnOd = byID(ids.btnOneDrive)!
     btnOd.textContent = "☁ Connexion en cours...";
-    await oneDrive.signIn();
+    await odSingleton.signIn();
     const userName = cases.userName;
     btnOd.textContent = userName ? "☁ " + userName : "☁ Connexion";
     if (userName) odStatus.textContent = "☁ " + userName;
@@ -342,7 +342,7 @@ async function updateTopBar(label: string, switchTo: string, action: Function): 
 
   // Try silent OneDrive sign-in
   if (!odBtn) return;
-  if (!oneDrive.userName) await oneDrive.signIn();
-  const userName = oneDrive.userName;
+  if (!odSingleton.userName) await odSingleton.signIn();
+  const userName = odSingleton.userName;
   odBtn.textContent = userName ? "☁ " + userName : "☁ Connexion";
 }
